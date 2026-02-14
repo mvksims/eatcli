@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# --- Configuration ---
+# Replace this with your actual bearer token
+BEARER_TOKEN="eyJhbGciOiJFUzI1NiIsImtpZCI6IjY5NmY0NThjMDAwMDAwMDAwMDAwMDAwMCIsInR5cCI6IngudXNlcitqd3QifQ.eyJhdWQiOlsiZGlmZnVzaW9uIiwiY29uc3VtZXItYXNzb3J0bWVudCIsIm9yZGVyLXRyYWNraW5nIiwid2xzLWN1c3RvbWVyLXNlcnZpY2UiLCJwYXltZW50LXNlcnZpY2UiLCJnaWZ0LWNhcmQtc2hvcCIsImludGVncmF0aW9uLWNvbmZpZy1zZXJ2aWNlIiwiY29ycG9yYXRlLXBvcnRhbC1hcGkiLCJhY3Rpdml0eS1odWIiLCJ3b2x0YXV0aCIsImxveWFsdHktZ2F0ZXdheSIsImxpc3QtZXZlcnl0aGluZy1kYXRhc3RvcmUiLCJjb3VyaWVyY2xpZW50Iiwic3VwcG9ydC1mdW5uZWwiLCJlLXdhbGxldC1zZXJ2aWNlIiwib3JkZXIteHAiLCJzdWJzY3JpcHRpb24tc2VydmljZSIsImxveWFsdHktcHJvZ3JhbS1hcGkiLCJtZWFsLWJlbmVmaXRzLXNlcnZpY2UiLCJyZXN0YXVyYW50LWFwaSIsInBlZHJlZ2FsIiwidmVudWUtY29udGVudC1hcGkiLCJyZXR1cm5zLWFwaSIsImFkLWluc2lnaHRzIiwiZGFhcy1wdWJsaWMtYXBpIiwid29sdC1jb20iLCJjb252ZXJzZS13aWRnZXQtY29uc3VtZXIiLCJwYXltZW50cy10aXBzLXNlcnZpY2UiLCJ0b3B1cC1zZXJ2aWNlIl0sImlzcyI6IndvbHRhdXRoIiwianRpIjoiYzFiYTQwZjRmZWRmMTFmMDkwZjhkMjE0YzNjYzVmYWQiLCJ1c2VyIjp7ImlkIjoiNWEzODU5YjdkNzU4YzgwMDBhODU5NDAyIiwibmFtZSI6eyJmaXJzdF9uYW1lIjoiTWF4IiwibGFzdF9uYW1lIjoiUyJ9LCJlbWFpbCI6InNhZHVyc2tpc0BpY2xvdWQuY29tIiwicm9sZXMiOlsidXNlciJdLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGhvbmVfbnVtYmVyX3Zlcm1pZmllZCI6dHJ1ZSwiY291bnRyeSI6IkxWQSIsInpeZHJlZ2FsX2lkIjoiNTVjYzY2YmMtMTFkNS00MTYzLWEwOGMtOThlMjBiMGZiNTA4IiwibGFuZ3VhZ2UiOiJndiIsInBlcm1pc3Npb25zOltdLCJwaG9uZV9udW1iZXIiOiIrMzcxMjY3MTcxOTkiLCJ0ZW5hbnQiOiJ3b2x0IiwicHJuIjoicHJuOnYxOndvbHQ6aWRlbnRpdHk6dXNlcjo1YTM4NTliN2Q3NThjODAwMGE4NTk0MDIifSwiaWF0IjoxNzY5ODg5NzQyLCJleHAiOjE3Njk4OTE1NDIsImFtciI6W10sInNpZCI6IjY5N2U1OGFmYTA1ZDY0YjAwYmRjY2U1ZSJ9.xuroaNLBOUePeJA47Xzm-5H-iiT6IosX2ND93XpFlJzDVyye8eLHloj7bps9TOIP9t-6vc_BZEqUYINnxVpprg"
+
+# List of endpoints to call
+# Add your specific endpoint URLs to this list
+ENDPOINTS=(
+    "https://restaurant-api.wolt.com/v1/user/me"
+    "https://consumer-api.wolt.com/order-xp/web/v1/pages/orders"
+)
+
+# --- Script ---
+echo "Starting API calls..."
+echo "========================================"
+
+if [ "$BEARER_TOKEN" == "eyJhbGciOiJFUzI1NiIsImtpZCI6IjY5NmY0NThjMDAwMDAwMDAwMDAwMDAwMCIsInR5cCI6IngudXNlcitqd3QifQ.eyJhdWQiOlsiZGlmZnVzaW9uIiwiY29uc3VtZXItYXNzb3J0bWVudCIsIm9yZGVyLXRyYWNraW5nIiwid2xzLWN1c3RvbWVyLXNlcnZpY2UiLCJwYXltZW50LXNlcnZpY2UiLCJnaWZ0LWNhcmQtc2hvcCIsImludGVncmF0aW9uLWNvbmZpZy1zZXJ2aWNlIiwiY29ycG9yYXRlLXBvcnRhbC1hcGkiLCJhY3Rpdml0eS1odWIiLCJ3b2x0YXV0aCIsImxveWFsdHktZ2F0ZXdheSIsImxpc3QtZXZlcnl0aGluZy1kYXRhc3RvcmUiLCJjb3VyaWVyY2xpZW50Iiwic3VwcG9ydC1mdW5uZWwiLCJlLXdhbGxldC1zZXJ2aWNlIiwib3JkZXIteHAiLCJzdWJzY3JpcHRpb24tc2VydmljZSIsImxveWFsdHktcHJvZ3JhbS1hcGkiLCJtZWFsLWJlbmVmaXRzLXNlcnZpY2UiLCJyZXN0YXVyYW50LWFwaSIsInBlZHJlZ2FsIiwidmVudWUtY29udGVudC1hcGkiLCJyZXR1cm5zLWFwaSIsImFkLWluc2lnaHRzIiwiZGFhcy1wdWJsaWMtYXBpIiwid29sdC1jb20iLCJjb252ZXJzZS13aWRnZXQtY29uc3VtZXIiLCJwYXltZW50cy10aXBzLXNlcnZpY2UiLCJ0b3B1cC1zZXJ2aWNlIl0sImlzcyI6IndvbHRhdXRoIiwianRpIjoiYzFiYTQwZjRmZWRmMTFmMDkwZjhkMjE0YzNjYzVmYWQiLCJ1c2VyIjp7ImlkIjoiNWEzODU5YjdkNzU4YzgwMDBhODU5NDAyIiwibmFtZSI6eyJmaXJzdF9uYW1lIjoiTWF4IiwibGFzdF9uYW1lIjoiUyJ9LCJlbWFpbCI6InNhZHVyc2tpc0BpY2xvdWQuY29tIiwicm9sZXMiOlsidXNlciJdLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwicGhvbmVfbnVtYmVyX3ZlcmlmaWVkIjp0cnVlLCJjb3VudHJ5IjoiTFZBIiwicGVkcmVnYWxfaWQiOiI1NWNjNjZiYy0xMWQ1LTQxNjMtYTA4Yy05OGUyMGIwZmI1MDgiLCJsYW5ndWFnZSI6Imx2IiwicGVybWlzc2lvbnMiOltdLCJwaG9uZV9udW1iZXIiOiIrMzcxMjY3MTcxOTkiLCJ0ZW5hbnQiOiJ3b2x0IiwicHJuIjoicHJuOnYxOndvbHQ6aWRlbnRpdHk6dXNlcjo1YTM4NTliN2Q3NThjODAwMGE4NTk0MDIifSwiaWF0IjoxNzY5ODg5NzQyLCJleHAiOjE3Njk4OTE1NDIsImFtciI6W10sInNpZCI6IjY5N2U1OGFmYTA1ZDY0YjAwYmRjY2U1ZSJ9.xuroaNLBOUePeJA47Xzm-5H-iiT6IosX2ND93XpFlJzDVyye8eLHloj7bps9TOIP9t-6vc_BZEqUYINnxVpprg" ]; then
+    echo "Warning: BEARER_TOKEN is set to its default placeholder value."
+    echo "Please edit call_endpoints.sh and set your actual bearer token."
+    echo "========================================"
+fi
+
+for endpoint in "${ENDPOINTS[@]}"; do
+    status_code=$(curl -v -o /dev/null -w "%{http_code}" -X GET \
+        -H "Authorization: Bearer $BEARER_TOKEN" \
+        -H "App-Currency-Format: MTIzNCw1NsKgwqQ=" \
+        -H "App-Language: lv" \
+        -H "App-Locale: lv" \
+        -H 'Client-Version: 1.16.73-PR20662' \
+        -H 'ClientVersionNumber: 1.16.73-PR20662' \
+        -H 'Cookie: _fbp=fb.1.1769887467322.752417160625562732; _ga_CP7Z2F7NFM=GS2.1.s1769887449$o1$g1$t1769888174$j33$l0$h0; _clsk=1upzjrd%5E1769888171003%5E4%5E0%5En.clarity.ms%2Fcollect; _ga=GA1.1.2033670440.1769886959; _uetsid=754c2670feda11f09ca0a95fe65fab92; _uetvid=754c12f0feda11f0988933366a71f601; telemetryDeviceId=421269f7-ef0d-4487-b858-2c5901b9ade6; _gcl_au=1.1.421989478.1769887449.495096799.1769887484.1769887800; _clck=10fc90y%5E2%5Eg36%5E1%5E2222; lantern=a0385c0e-6ff5-4723-880d-d4fc51351574; AwinChannelCookie=direct; __woltAnalyticsId=3b521318-73e6-40ff-834d-3e206e6d6753; __woltUid=421269f7-ef0d-4487-b858-2c5901b9ade6; cwc-consents={%22analytics%22:true%2C%22functional%22:true%2C%22interaction%22:{%22bundle%22:%22allow%22}%2C%22marketing%22:true%2C%22updatedAt%22:{%22bundle%22:%222026-01-31T19:24:26.790Z%22%2C%22analytics%22:%222026-01-31T19:24:26.790Z%22%2C%22functional%22:%222026-01-31T19:24:26.790Z%22%2C%22marketing%22:%222026-01-31T19:24:26.790Z%22%2C%22required%22:%222026-01-31T19:24:26.790Z%22}%2C%22versions%22:{%22bundle%22:[%226f6e0a18-e3dd-43e8-9e57-7e09f6d90239%22%2C%224900fd93-1d29-4f54-b165-82d98b47c9ce%22]%2C%22analytics%22:[%22716f579d-563b-43c4-9544-b7744e910922%22%2C%22866de2a7-f093-414c-bc8c-a744f9427c62%22]%2C%22functional%22:[%221ce7c01e-9264-4f9b-9485-4503c936e590%22%2C%22cdcacfa1-9cfe-4a31-970c-93ddf2c42d51%22]%2C%22marketing%22:[%2264deac7c-b440-4f76-a9b6-a8278e44592f%22%2C%22f9b2bbff-5d68-4cac-8585-2d545389fd06%22]%2C%22required%22:[%22581b8464-5d8a-4afa-b728-bb5c0df7f9c4%22%2C%2252a32bca-31d8-4f34-b232-5fb3d9757d2c%22]}}; telemetrySessionId=3b521318-73e6-40ff-834d-3e206e6d6753; _ga_GK0MS66XP3=GS2.1.s1769886958$o1$g1$t1769887040$j54$l0$h0' \
+        -H 'Origin: https://wolt.com' \
+        -H 'Platform: Web' \
+        -H 'Priority: u=3, i' \
+        -H 'Referer: https://wolt.com/' \
+        -H 'Sec-Fetch-Dest: empty' \
+        -H 'Sec-Fetch-Mode: cors' \
+        -H 'Sec-Fetch-Site: same-site' \
+        -H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Safari/605.1.15' \
+        -H 'w-wolt-session-id: 3b521318-73e6-40ff-834d-3e206e6d6753' \
+        -H 'x-wolt-web-clientid: 421269f7-ef0d-4487-b858-2c5901b9ade6' \
+        "$endpoint")
+    echo "Endpoint: $endpoint"
+    echo "Status Code: $status_code"
+    echo "----------------------------------------"
+done
+
+echo "All API calls complete."
