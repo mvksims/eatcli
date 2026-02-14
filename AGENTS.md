@@ -1,4 +1,4 @@
-# Agent Notes for Go Playwright Authentication CLI
+# Agent Notes for EAT CLI
 
 This document contains notes and context from the Gemini CLI agent regarding the development and functionality of this application. It should be updated whenever the application's logic or architecture changes significantly.
 
@@ -6,7 +6,7 @@ This document contains notes and context from the Gemini CLI agent regarding the
 
 This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for a two-stage workflow:
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
-2.  **`run` command:** A non-interactive process that reuses the persisted session to perform automated tasks.
+2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
 
 ## Key Technologies and Architecture
 
