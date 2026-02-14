@@ -105,7 +105,7 @@ func main() {
 
 	switch command {
 	case "auth":
-		fmt.Print("Please provide the authentication URL: ")
+		fmt.Print("Go to wolt.com and try to login with your email address. Then copy the sign-in URL from the received email into here: ")
 		var authURL string
 		if _, err := fmt.Scanln(&authURL); err != nil {
 			log.Fatalf("Failed to read URL: %v", err)
