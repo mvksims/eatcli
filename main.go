@@ -122,8 +122,25 @@ func main() {
 		if err := runSearch(cfg, query); err != nil {
 			log.Fatalf("Search failed: %v", err)
 		}
+	case "basket":
+		if len(queryParts) == 0 {
+			log.Fatalf("Basket command requires a subcommand. Use 'basket add <venue_slug> <item_id>'.")
+		}
+		switch strings.ToLower(queryParts[0]) {
+		case "add":
+			if len(queryParts) != 3 {
+				log.Fatalf("Basket add requires exactly 2 arguments: <venue_slug> <item_id>.")
+			}
+			venueSlug := queryParts[1]
+			itemID := queryParts[2]
+			if err := runBasketAdd(cfg, venueSlug, itemID); err != nil {
+				log.Fatalf("Basket add failed: %v", err)
+			}
+		default:
+			log.Fatalf("Unknown basket subcommand: %s. Use 'basket add <venue_slug> <item_id>'.", queryParts[0])
+		}
 	default:
-		log.Fatalf("Unknown command: %s. Use 'auth' or 'search'.", command)
+		log.Fatalf("Unknown command: %s. Use 'auth', 'search', or 'basket'.", command)
 	}
 }
 
@@ -163,12 +180,14 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth         Run the interactive authentication process.")
 	fmt.Fprintln(os.Stderr, "  search       Search for items on Wolt.")
+	fmt.Fprintln(os.Stderr, "  basket       Basket operations. Currently supports: add.")
 	fmt.Fprintln(os.Stderr, "\nGlobal Options:")
 	fmt.Fprintln(os.Stderr, "  --help, -h   Show this help message and exit.")
 	fmt.Fprintln(os.Stderr, "\nOptions for 'auth' command:")
 	fmt.Fprintln(os.Stderr, "  --erase-data Force deletion of existing session data before authenticating.")
 	fmt.Fprintln(os.Stderr, "\nArguments:")
 	fmt.Fprintln(os.Stderr, "  [config.yml] (Optional) Path to the config file. Defaults to 'config.yml'.")
+	fmt.Fprintln(os.Stderr, "  basket add <venue_slug> <item_id> Opens item page, clicks add button, and prints basket JSON.")
 }
 
 func runAuth(cfg Config, eraseData bool, authURL string) error {
@@ -611,6 +630,221 @@ func runSearch(cfg Config, query string) error {
 	fmt.Println(string(resultJSON))
 
 	return nil
+}
+
+func runBasketAdd(cfg Config, venueSlug, itemID string) error {
+	targetURL := buildBasketAddURL(venueSlug, itemID)
+	fmt.Printf("Opening basket add page: %s\n", targetURL)
+
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("could not start playwright: %w", err)
+	}
+	defer pw.Stop()
+
+	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+		return fmt.Errorf("could not create user data directory: %w", err)
+	}
+
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(false), // Always interactive for basket add
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	})
+	if err != nil {
+		return fmt.Errorf("could not launch persistent context: %w", err)
+	}
+	defer ctx.Close()
+
+	script := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => false });
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			],
+		});
+		const originalQuery = navigator.permissions.query;
+		navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications'
+				? Promise.resolve({ state: 'prompt' })
+				: originalQuery(parameters)
+		);
+	`
+	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
+		return fmt.Errorf("could not add init script: %w", err)
+	}
+
+	page, err := ctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("could not create new page: %w", err)
+	}
+
+	if err := page.SetViewportSize(1440, 810); err != nil {
+		return fmt.Errorf("could not set viewport size: %w", err)
+	}
+
+	if err := setupHeaderRemoval(page); err != nil {
+		return fmt.Errorf("could not set up header removal: %w", err)
+	}
+
+	type basketRes struct {
+		body   []byte
+		err    error
+		url    string
+		status int
+		at     time.Time
+	}
+	resChan := make(chan basketRes, 10)
+
+	page.OnResponse(func(res playwright.Response) {
+		if !isBasketPageRequest(res.Request().Method(), res.URL()) {
+			return
+		}
+
+		go func() {
+			b, err := res.Body()
+			select {
+			case resChan <- basketRes{
+				body:   b,
+				err:    err,
+				url:    res.URL(),
+				status: res.Status(),
+				at:     time.Now(),
+			}:
+			default:
+				// Keep processing without blocking the event loop.
+			}
+		}()
+	})
+
+	if _, err := page.Goto(targetURL); err != nil {
+		return fmt.Errorf("could not go to basket add URL: %w", err)
+	}
+
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("basket add page did not fully load: %w", err)
+	}
+
+	restoreClicked, err := maybeConfirmRestoreOrderModal(page, cfg.Timeout)
+	if err != nil {
+		return err
+	}
+	if restoreClicked {
+		// Let UI settle after closing modal; ignore timeout and continue with main flow.
+		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State:   playwright.LoadStateNetworkidle,
+			Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+		}); err != nil {
+			log.Printf("Warning: could not reach network idle after restore order modal confirmation: %v", err)
+		}
+	}
+
+	buttonSelector := `[data-test-id="product-modal.total-price"]`
+	button := page.Locator(buttonSelector).Nth(0)
+	if err := button.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find basket add button '%s': %w", buttonSelector, err)
+	}
+
+	clickStartedAt := time.Now()
+	if err := button.Click(); err != nil {
+		return fmt.Errorf("could not click basket add button '%s': %w", buttonSelector, err)
+	}
+
+	var lastErr error
+	timeout := time.After(cfg.Timeout)
+	for {
+		select {
+		case res := <-resChan:
+			if res.at.Before(clickStartedAt) {
+				continue
+			}
+			if res.err != nil {
+				lastErr = res.err
+				continue
+			}
+			if res.status < 200 || res.status >= 300 {
+				continue
+			}
+
+			var responseJSON interface{}
+			if err := json.Unmarshal(res.body, &responseJSON); err != nil {
+				lastErr = err
+				continue
+			}
+
+			result := map[string]interface{}{
+				"venue_slug": venueSlug,
+				"item_id":    itemID,
+				"request": map[string]interface{}{
+					"url":    res.url,
+					"status": res.status,
+				},
+				"basket": responseJSON,
+			}
+			resultJSON, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(resultJSON))
+			return nil
+		case <-timeout:
+			if lastErr != nil {
+				return fmt.Errorf("timed out waiting for baskets API JSON response, last error: %w", lastErr)
+			}
+			return fmt.Errorf("timed out waiting for API response from https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets")
+		}
+	}
+}
+
+func isBasketPageRequest(method, requestURL string) bool {
+	if !strings.EqualFold(method, "GET") {
+		return false
+	}
+
+	return strings.Contains(requestURL, "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets")
+}
+
+func maybeConfirmRestoreOrderModal(page playwright.Page, timeout time.Duration) (bool, error) {
+	selector := `[data-test-id="restore-order-modal.confirm"]`
+	waitTimeout := basketRestoreModalWaitTimeout(timeout)
+
+	button, err := page.WaitForSelector(selector, playwright.PageWaitForSelectorOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
+	})
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			return false, nil
+		}
+		return false, fmt.Errorf("could not inspect restore-order confirm button '%s': %w", selector, err)
+	}
+
+	if err := button.Click(); err != nil {
+		return false, fmt.Errorf("could not click restore-order confirm button '%s': %w", selector, err)
+	}
+
+	return true, nil
+}
+
+func basketRestoreModalWaitTimeout(timeout time.Duration) time.Duration {
+	const maxWait = 5 * time.Second
+	if timeout <= 0 {
+		return maxWait
+	}
+	if timeout < maxWait {
+		return timeout
+	}
+	return maxWait
+}
+
+func buildBasketAddURL(venueSlug, itemID string) string {
+	return fmt.Sprintf(
+		"https://wolt.com/en/lva/riga/venue/%s/itemid-%s",
+		url.PathEscape(venueSlug),
+		url.PathEscape(itemID),
+	)
 }
 
 type SearchProduct struct {

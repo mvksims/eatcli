@@ -296,3 +296,89 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 		t.Fatalf("unexpected venue slug: %s", matched.VenueSlug)
 	}
 }
+
+func TestBuildBasketAddURL(t *testing.T) {
+	got := buildBasketAddURL("wolt-market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
+	want := "https://wolt.com/en/lva/riga/venue/wolt-market-grizinkalna/itemid-3135258a5f2ffa0c518ab4b8"
+	if got != want {
+		t.Fatalf("unexpected basket add URL: got %q want %q", got, want)
+	}
+}
+
+func TestIsBasketPageRequest(t *testing.T) {
+	tests := []struct {
+		name      string
+		method    string
+		url       string
+		wantMatch bool
+	}{
+		{
+			name:      "matches GET baskets endpoint",
+			method:    "GET",
+			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets?currency=EUR",
+			wantMatch: true,
+		},
+		{
+			name:      "matches GET case-insensitive method",
+			method:    "get",
+			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets",
+			wantMatch: true,
+		},
+		{
+			name:      "does not match non-GET method",
+			method:    "POST",
+			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets",
+			wantMatch: false,
+		},
+		{
+			name:      "does not match unrelated URL",
+			method:    "GET",
+			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/search",
+			wantMatch: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := isBasketPageRequest(tc.method, tc.url)
+			if got != tc.wantMatch {
+				t.Fatalf("unexpected match: got %v want %v", got, tc.wantMatch)
+			}
+		})
+	}
+}
+
+func TestBasketRestoreModalWaitTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   time.Duration
+		wantOut time.Duration
+	}{
+		{
+			name:    "uses max wait for zero timeout",
+			input:   0,
+			wantOut: 5 * time.Second,
+		},
+		{
+			name:    "uses provided timeout when shorter",
+			input:   2 * time.Second,
+			wantOut: 2 * time.Second,
+		},
+		{
+			name:    "caps long timeout",
+			input:   30 * time.Second,
+			wantOut: 5 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := basketRestoreModalWaitTimeout(tc.input)
+			if got != tc.wantOut {
+				t.Fatalf("unexpected timeout clamp: got %v want %v", got, tc.wantOut)
+			}
+		})
+	}
+}

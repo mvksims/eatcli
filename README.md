@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides two commands: `auth` for interactive login and `search` for querying Wolt items with the saved session.
+This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides `auth` for interactive login, `search` for querying Wolt items with the saved session, and `basket add` for opening an item page and returning basket payload JSON.
 
 ## Prerequisites
 
@@ -35,12 +35,13 @@ timeout_seconds: 600
 
 The application is run with the following structure:
 ```bash
-go run main.go <command> [options] [config.yml] [query]
+go run main.go <command> [options] [config.yml] [args...]
 ```
--   `<command>` is `auth` or `search`.
+-   `<command>` is `auth`, `search`, or `basket`.
 -   `[options]` are command-specific flags.
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
+-   For `basket add`, arguments are `<venue_slug> <item_id>`.
 
 ### `auth` Command
 
@@ -80,4 +81,25 @@ Example output shape:
     }
   ]
 }
+```
+
+### `basket add` Command
+
+This command takes `venue_slug` and `item_id`, opens:
+
+`https://wolt.com/en/lva/riga/venue/<venue_slug>/itemid-<item_id>`
+
+waits for the page to load, clicks the button with `data-test-id="product-modal.total-price"`, then captures the first successful `GET` response that matches:
+
+`https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets`
+
+If a restore-order modal appears after opening the product page, it first clicks:
+
+`[data-test-id="restore-order-modal.confirm"]`
+
+and prints it as JSON.
+
+**Example:**
+```bash
+go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 ```
