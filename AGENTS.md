@@ -4,10 +4,11 @@ This document contains notes and context from the Gemini CLI agent regarding the
 
 ## Project Summary
 
-This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for a two-stage workflow:
+This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for command-based flows:
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
 3.  **`basket add` command:** A non-interactive flow that opens a specific Wolt item page using `venue_slug` and `item_id`, waits for load, clicks the product total-price button, captures the baskets API response, and prints JSON.
+4.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
 
 ## Key Technologies and Architecture
 
@@ -42,6 +43,8 @@ During initial development, several challenges were encountered, primarily revol
 -   **Search Payload Parsing:** The `search` parser now supports Wolt item payloads where fields are nested under `items[].menu_item` and/or `items[].link.menu_item_details`, which fixed missing `id`, `price`, and `venue_slug` in results.
 -   **Basket Add Command:** `basket add <venue_slug> <item_id>` now waits for page load, clicks `[data-test-id="product-modal.total-price"]`, captures a successful `GET` response for `https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets`, and prints the response JSON.
 -   **Basket Restore Modal Handling:** `basket add` now checks for `[data-test-id="restore-order-modal.confirm"]` after initial page load and clicks it when present before attempting add-to-basket.
+-   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
+-   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
 
 ## Usage Notes for Agent
 

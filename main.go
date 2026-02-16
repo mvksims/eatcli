@@ -139,8 +139,16 @@ func main() {
 		default:
 			log.Fatalf("Unknown basket subcommand: %s. Use 'basket add <venue_slug> <item_id>'.", queryParts[0])
 		}
+	case "checkout":
+		if len(queryParts) != 1 {
+			log.Fatalf("Checkout command requires exactly 1 argument: <venue_slug>.")
+		}
+		venueSlug := queryParts[0]
+		if err := runCheckout(cfg, venueSlug); err != nil {
+			log.Fatalf("Checkout failed: %v", err)
+		}
 	default:
-		log.Fatalf("Unknown command: %s. Use 'auth', 'search', or 'basket'.", command)
+		log.Fatalf("Unknown command: %s. Use 'auth', 'search', 'basket', or 'checkout'.", command)
 	}
 }
 
@@ -181,6 +189,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  auth         Run the interactive authentication process.")
 	fmt.Fprintln(os.Stderr, "  search       Search for items on Wolt.")
 	fmt.Fprintln(os.Stderr, "  basket       Basket operations. Currently supports: add.")
+	fmt.Fprintln(os.Stderr, "  checkout     Open venue checkout page and click Send Order button.")
 	fmt.Fprintln(os.Stderr, "\nGlobal Options:")
 	fmt.Fprintln(os.Stderr, "  --help, -h   Show this help message and exit.")
 	fmt.Fprintln(os.Stderr, "\nOptions for 'auth' command:")
@@ -188,6 +197,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "\nArguments:")
 	fmt.Fprintln(os.Stderr, "  [config.yml] (Optional) Path to the config file. Defaults to 'config.yml'.")
 	fmt.Fprintln(os.Stderr, "  basket add <venue_slug> <item_id> Opens item page, clicks add button, and prints basket JSON.")
+	fmt.Fprintln(os.Stderr, "  checkout <venue_slug> Opens checkout page and clicks Send Order.")
 }
 
 func runAuth(cfg Config, eraseData bool, authURL string) error {
@@ -798,6 +808,103 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 	}
 }
 
+func runCheckout(cfg Config, venueSlug string) error {
+	targetURL := buildCheckoutURL(venueSlug)
+	fmt.Printf("Opening checkout page: %s\n", targetURL)
+
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("could not start playwright: %w", err)
+	}
+	defer pw.Stop()
+
+	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+		return fmt.Errorf("could not create user data directory: %w", err)
+	}
+
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(false), // Always interactive for checkout
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	})
+	if err != nil {
+		return fmt.Errorf("could not launch persistent context: %w", err)
+	}
+	defer ctx.Close()
+
+	script := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => false });
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			],
+		});
+		const originalQuery = navigator.permissions.query;
+		navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications'
+				? Promise.resolve({ state: 'prompt' })
+				: originalQuery(parameters)
+		);
+	`
+	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
+		return fmt.Errorf("could not add init script: %w", err)
+	}
+
+	page, err := ctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("could not create new page: %w", err)
+	}
+
+	if err := page.SetViewportSize(1440, 810); err != nil {
+		return fmt.Errorf("could not set viewport size: %w", err)
+	}
+
+	if err := setupHeaderRemoval(page); err != nil {
+		return fmt.Errorf("could not set up header removal: %w", err)
+	}
+
+	if _, err := page.Goto(targetURL); err != nil {
+		return fmt.Errorf("could not go to checkout URL: %w", err)
+	}
+
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("checkout page did not fully load: %w", err)
+	}
+
+	sendOrderButtonSelector := `[data-test-id="SendOrderButton"]`
+	sendOrderButton := page.Locator(sendOrderButtonSelector).Nth(0)
+	if err := sendOrderButton.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find Send Order button '%s': %w", sendOrderButtonSelector, err)
+	}
+
+	if err := sendOrderButton.Click(); err != nil {
+		return fmt.Errorf("could not click Send Order button '%s': %w", sendOrderButtonSelector, err)
+	}
+
+	modalInnerValue, foundModal, err := waitForGenericCheckoutErrorModalInnerText(page, 10*time.Second)
+	if err != nil {
+		return err
+	}
+
+	result := map[string]interface{}{
+		"venue_slug":                   venueSlug,
+		"send_order_clicked":           true,
+		"generic_checkout_error_modal": nil,
+	}
+	if foundModal {
+		result["generic_checkout_error_modal"] = modalInnerValue
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(resultJSON))
+	return nil
+}
+
 func isBasketPageRequest(method, requestURL string) bool {
 	if !strings.EqualFold(method, "GET") {
 		return false
@@ -845,6 +952,35 @@ func buildBasketAddURL(venueSlug, itemID string) string {
 		url.PathEscape(venueSlug),
 		url.PathEscape(itemID),
 	)
+}
+
+func buildCheckoutURL(venueSlug string) string {
+	return fmt.Sprintf(
+		"https://wolt.com/en/lva/riga/venue/%s/checkout",
+		url.PathEscape(venueSlug),
+	)
+}
+
+func waitForGenericCheckoutErrorModalInnerText(page playwright.Page, timeout time.Duration) (string, bool, error) {
+	selector := `div[data-test-id="GenericCheckoutErrorModal"], div.GenericCheckoutErrorModal, [data-test-id="GenericCheckoutErrorModal"]`
+	modal := page.Locator(selector).Nth(0)
+
+	if err := modal.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(timeout.Milliseconds())),
+	}); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("could not check GenericCheckoutErrorModal visibility: %w", err)
+	}
+
+	innerValue, err := modal.InnerText()
+	if err != nil {
+		return "", false, fmt.Errorf("could not read GenericCheckoutErrorModal inner value: %w", err)
+	}
+
+	return strings.TrimSpace(innerValue), true, nil
 }
 
 type SearchProduct struct {

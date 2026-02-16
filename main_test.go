@@ -305,6 +305,14 @@ func TestBuildBasketAddURL(t *testing.T) {
 	}
 }
 
+func TestBuildCheckoutURL(t *testing.T) {
+	got := buildCheckoutURL("wolt-market-grizinkalna")
+	want := "https://wolt.com/en/lva/riga/venue/wolt-market-grizinkalna/checkout"
+	if got != want {
+		t.Fatalf("unexpected checkout URL: got %q want %q", got, want)
+	}
+}
+
 func TestIsBasketPageRequest(t *testing.T) {
 	tests := []struct {
 		name      string

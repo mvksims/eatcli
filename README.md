@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides `auth` for interactive login, `search` for querying Wolt items with the saved session, and `basket add` for opening an item page and returning basket payload JSON.
+This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides `auth` for interactive login, `search` for querying Wolt items with the saved session, `basket add` for opening an item page and returning basket payload JSON, and `checkout` for opening a venue checkout page and clicking Send Order.
 
 ## Prerequisites
 
@@ -37,11 +37,12 @@ The application is run with the following structure:
 ```bash
 go run main.go <command> [options] [config.yml] [args...]
 ```
--   `<command>` is `auth`, `search`, or `basket`.
+-   `<command>` is `auth`, `search`, `basket`, or `checkout`.
 -   `[options]` are command-specific flags.
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
 -   For `basket add`, arguments are `<venue_slug> <item_id>`.
+-   For `checkout`, argument is `<venue_slug>`.
 
 ### `auth` Command
 
@@ -102,4 +103,25 @@ and prints it as JSON.
 **Example:**
 ```bash
 go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
+```
+
+### `checkout` Command
+
+This command takes `venue_slug`, opens:
+
+`https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout`
+
+waits for the page to fully load, then clicks:
+
+`[data-test-id="SendOrderButton"]`
+
+After clicking, it waits up to 10 seconds for:
+
+`GenericCheckoutErrorModal`
+
+If the modal appears, the command returns its inner text in the JSON output field `generic_checkout_error_modal`.
+
+**Example:**
+```bash
+go run main.go checkout wolt-market-grizinkalna
 ```
