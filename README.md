@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides two commands: `auth` for interactive login, and `run` for executing automation.
+This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides two commands: `auth` for interactive login and `search` for querying Wolt items with the saved session.
 
 ## Prerequisites
 
@@ -20,11 +20,10 @@ This is a Go application that uses Playwright to automate web tasks that require
 
 ## Configuration
 
-The application is configured via a `config.yml` file, which should be in the same directory. The file specifies the login URL, success conditions, and other settings.
+The application is configured via a `config.yml` file, which should be in the same directory. The file specifies success conditions, session directory, and runtime settings.
 
 Example `config.yml`:
 ```yaml
-start_url: "https://wolt.com/en/login"
 success_url_pattern: "https://wolt.com/en/discovery"
 success_selector: "[data-test-id='UserStatus.ProfileImage']"
 user_data_dir: "./profile/wolt"
@@ -38,7 +37,7 @@ The application is run with the following structure:
 ```bash
 go run main.go <command> [options] [config.yml] [query]
 ```
--   `<command>` is `auth`, `run`, or `search`.
+-   `<command>` is `auth` or `search`.
 -   `[options]` are command-specific flags.
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
@@ -56,21 +55,29 @@ go run main.go auth
 go run main.go auth --erase-data
 ```
 
-### `run` Command
-
-This command uses the saved session to run the automation logic. If the session has expired, it will instruct you to run the `auth` command again.
-
-**Example:**
-```bash
-go run main.go run
-```
-
 ### `search` Command
 
-This command searches for items on Wolt and returns a JSON summary including the keyword and the count of items found.
+This command searches for items on Wolt and returns a JSON summary including the keyword, total count, and a `products` list. Each product includes `id`, `name`, `price`, `venue_id`, and `venue_slug`.
 
 **Example:**
 ```bash
 go run main.go search potato
 go run main.go search peeled tomatoes
+```
+
+Example output shape:
+```json
+{
+  "keyword": "potato",
+  "count": 2,
+  "products": [
+    {
+      "id": "a22bc220dd44c8f8daa8ef96",
+      "name": "Selga šokolādes glazūrā 190g cepumi",
+      "price": 289,
+      "venue_id": "62430901d7678f5b344972e4",
+      "venue_slug": "wolt-market-grizinkalna"
+    }
+  ]
+}
 ```

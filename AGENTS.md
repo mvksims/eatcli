@@ -14,7 +14,7 @@ This application implements a Go-based Command Line Interface (CLI) leveraging P
 *   **Web Automation:** `playwright-go` library (`github.com/playwright-community/playwright-go`)
 *   **Configuration:** YAML files (`gopkg.in/yaml.v3`)
 *   **Authentication Strategy:** Uses Playwright's `LaunchPersistentContext` to save and reuse browser profiles (including cookies, local storage, etc.) for session persistence. Login detection relies on `success_url_pattern` and `success_selector` defined in the config.
-*   **Browser Configuration:** Playwright is configured to use the WebKit browser engine (mimicking Safari) and a Safari-like user agent. Automation indicators (like `navigator.webdriver`) are hidden using an injected init script.
+*   **Browser Configuration:** Playwright is configured to use the Firefox browser engine with a Firefox user agent. Automation indicators (like `navigator.webdriver`) are hidden using an injected init script.
 
 ## Development History and Debugging Insights
 
@@ -37,6 +37,8 @@ During initial development, several challenges were encountered, primarily revol
     *   **Current Status:** The "target closed" error still occurs during the `auth` command's `page.WaitForLoadState` or `page.WaitForURL` calls for Wolt's login page, suggesting a complex interaction or redirection within the target website itself that invalidates the Playwright `page` object. The issue arises *before* user interaction, at the initial page load. Further debugging may require direct browser observation or alternative waiting strategies (e.g., polling).
 
 -   **Optional Config Argument:** The CLI was updated to make the `config.yml` argument optional. It now defaults to `config.yml` if no path is provided.
+-   **Search Output Expansion:** The `search` command now returns a `products` array with per-product metadata (`id`, `name`, `price`, `venue_id`, `venue_slug`) in addition to the keyword and count.
+-   **Search Payload Parsing:** The `search` parser now supports Wolt item payloads where fields are nested under `items[].menu_item` and/or `items[].link.menu_item_details`, which fixed missing `id`, `price`, and `venue_slug` in results.
 
 ## Usage Notes for Agent
 

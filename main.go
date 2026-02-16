@@ -599,29 +599,522 @@ func runSearch(cfg Config, query string) error {
 		return fmt.Errorf("could not unmarshal response JSON: %w. Body length: %d", err, len(body))
 	}
 
-	// Extract count of sections.items
-	count := 0
-	if resMap, ok := responseJSON.(map[string]interface{}); ok {
-		if sections, ok := resMap["sections"].([]interface{}); ok {
-			for _, s := range sections {
-				if section, ok := s.(map[string]interface{}); ok {
-					if items, ok := section["items"].([]interface{}); ok {
-						count += len(items)
-					}
-				}
-			}
-		}
-	}
+	products := extractSearchProducts(responseJSON)
 
 	result := map[string]interface{}{
-		"keyword": query,
-		"count":   count,
+		"keyword":  query,
+		"count":    len(products),
+		"products": products,
 	}
 
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(resultJSON))
 
 	return nil
+}
+
+type SearchProduct struct {
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Price     interface{} `json:"price"`
+	VenueID   string      `json:"venue_id"`
+	VenueSlug string      `json:"venue_slug"`
+}
+
+func extractSearchProducts(responseJSON interface{}) []SearchProduct {
+	resMap, ok := responseJSON.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	sections, ok := resMap["sections"].([]interface{})
+	if !ok {
+		if nestedSections := findNestedArrayByKey(resMap, "sections"); nestedSections != nil {
+			sections = nestedSections
+		} else {
+			return nil
+		}
+	}
+
+	products := make([]SearchProduct, 0)
+	seen := make(map[string]struct{})
+
+	for sectionIdx, sectionRaw := range sections {
+		section, ok := sectionRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		items, ok := section["items"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for itemIdx, itemRaw := range items {
+			item, ok := itemRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			product, ok := extractSearchProduct(item, sectionIdx, itemIdx)
+			if !ok {
+				continue
+			}
+
+			key := product.ID + "|" + product.VenueID + "|" + product.Name
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			products = append(products, product)
+		}
+	}
+
+	return products
+}
+
+func extractSearchProduct(item map[string]interface{}, sectionIdx, itemIdx int) (SearchProduct, bool) {
+	scopes := buildProductScopes(item)
+
+	id := firstStringFromScopes(scopes, []string{"id", "item_id", "product_id", "public_id", "reference_id"})
+	name := firstDisplayStringFromScopes(scopes, []string{"name", "title", "item_name", "display_name", "product_name"})
+	price, hasPrice := firstPriceFromScopes(scopes)
+
+	venueID := ""
+	venueSlug := ""
+
+	for _, scope := range scopes {
+		if venueID == "" {
+			venueID = firstStringFromScope(scope, []string{"venue_id"})
+		}
+		if venueSlug == "" {
+			venueSlug = firstStringFromScope(scope, []string{"venue_slug"})
+		}
+		if venueID != "" && venueSlug != "" {
+			break
+		}
+	}
+
+	if venue := findNestedMapByKey(item, "venue"); venue != nil {
+		if venueID == "" {
+			venueID = firstStringFromScope(venue, []string{"id", "venue_id"})
+		}
+		if venueSlug == "" {
+			venueSlug = firstStringFromScope(venue, []string{"slug", "venue_slug"})
+		}
+
+		if nestedVenue := asMap(venue["value"]); nestedVenue != nil {
+			if venueID == "" {
+				venueID = firstStringFromScope(nestedVenue, []string{"id", "venue_id"})
+			}
+			if venueSlug == "" {
+				venueSlug = firstStringFromScope(nestedVenue, []string{"slug", "venue_slug"})
+			}
+		}
+	}
+
+	textValues := collectStringValues(item)
+	if name == "" {
+		name = fallbackNameFromTextValues(textValues)
+	}
+	for _, text := range textValues {
+		if id == "" {
+			id = extractIDFromText(text)
+		}
+		if venueSlug == "" {
+			venueSlug = extractVenueSlugFromText(text)
+		}
+		if id != "" && venueSlug != "" {
+			break
+		}
+	}
+
+	if name == "" {
+		return SearchProduct{}, false
+	}
+	if id == "" {
+		id = fmt.Sprintf("section_%d_item_%d", sectionIdx, itemIdx)
+	}
+
+	var normalizedPrice interface{}
+	if hasPrice {
+		normalizedPrice = normalizePrice(price)
+	}
+
+	return SearchProduct{
+		ID:        id,
+		Name:      name,
+		Price:     normalizedPrice,
+		VenueID:   venueID,
+		VenueSlug: venueSlug,
+	}, true
+}
+
+func buildProductScopes(item map[string]interface{}) []map[string]interface{} {
+	scopes := make([]map[string]interface{}, 0, 8)
+
+	for _, key := range []string{"value", "item", "product", "content", "data", "details", "menu_item", "link", "menu_item_details"} {
+		if scope := asMap(item[key]); scope != nil {
+			scopes = append(scopes, scope)
+		}
+	}
+
+	if value := asMap(item["value"]); value != nil {
+		for _, key := range []string{"item", "product", "content", "menu_item", "link", "menu_item_details"} {
+			if scope := asMap(value[key]); scope != nil {
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+
+	if link := asMap(item["link"]); link != nil {
+		for _, key := range []string{"menu_item_details", "action_link"} {
+			if scope := asMap(link[key]); scope != nil {
+				scopes = append(scopes, scope)
+			}
+		}
+	}
+
+	scopes = append(scopes, item)
+	return scopes
+}
+
+func firstPriceFromScopes(scopes []map[string]interface{}) (interface{}, bool) {
+	for _, scope := range scopes {
+		if raw, ok := firstAnyFromScope(scope, []string{
+			"price",
+			"baseprice",
+			"base_price",
+			"current_price",
+			"display_price",
+			"formatted_price",
+		}); ok {
+			return raw, true
+		}
+
+		if pricing, ok := scope["pricing"]; ok {
+			if value, ok := extractPriceFromValue(pricing); ok {
+				return value, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func firstStringFromScopes(scopes []map[string]interface{}, keys []string) string {
+	for _, scope := range scopes {
+		if value := firstStringFromScope(scope, keys); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstDisplayStringFromScopes(scopes []map[string]interface{}, keys []string) string {
+	for _, scope := range scopes {
+		if value := firstDisplayStringFromScope(scope, keys); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstStringFromScope(scope map[string]interface{}, keys []string) string {
+	for _, key := range keys {
+		raw, exists := scope[key]
+		if !exists {
+			continue
+		}
+		if text := toString(raw); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func firstDisplayStringFromScope(scope map[string]interface{}, keys []string) string {
+	for _, key := range keys {
+		raw, exists := scope[key]
+		if !exists {
+			continue
+		}
+		if text := toDisplayString(raw); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func firstAnyFromScope(scope map[string]interface{}, keys []string) (interface{}, bool) {
+	for _, key := range keys {
+		raw, exists := scope[key]
+		if exists {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func extractPriceFromValue(value interface{}) (interface{}, bool) {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		for _, key := range []string{"amount", "value", "current", "price", "formatted", "display"} {
+			if raw, ok := v[key]; ok {
+				return raw, true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if nested, ok := extractPriceFromValue(item); ok {
+				return nested, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func normalizePrice(value interface{}) interface{} {
+	if nested, ok := extractPriceFromValue(value); ok {
+		return nested
+	}
+	return value
+}
+
+func asMap(value interface{}) map[string]interface{} {
+	if mapped, ok := value.(map[string]interface{}); ok {
+		return mapped
+	}
+	return nil
+}
+
+func findNestedMapByKey(value interface{}, key string) map[string]interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		if candidate, ok := v[key]; ok {
+			if mapped, ok := candidate.(map[string]interface{}); ok {
+				return mapped
+			}
+		}
+		for _, nested := range v {
+			if result := findNestedMapByKey(nested, key); result != nil {
+				return result
+			}
+		}
+	case []interface{}:
+		for _, nested := range v {
+			if result := findNestedMapByKey(nested, key); result != nil {
+				return result
+			}
+		}
+	}
+	return nil
+}
+
+func findNestedArrayByKey(value interface{}, key string) []interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		if candidate, ok := v[key]; ok {
+			if arr, ok := candidate.([]interface{}); ok {
+				return arr
+			}
+		}
+		for _, nested := range v {
+			if result := findNestedArrayByKey(nested, key); result != nil {
+				return result
+			}
+		}
+	case []interface{}:
+		for _, nested := range v {
+			if result := findNestedArrayByKey(nested, key); result != nil {
+				return result
+			}
+		}
+	}
+	return nil
+}
+
+func collectStringValues(value interface{}) []string {
+	values := make([]string, 0, 16)
+	var walk func(interface{})
+
+	walk = func(current interface{}) {
+		switch v := current.(type) {
+		case string:
+			text := strings.TrimSpace(v)
+			if text != "" {
+				values = append(values, text)
+			}
+		case map[string]interface{}:
+			for _, nested := range v {
+				walk(nested)
+			}
+		case []interface{}:
+			for _, nested := range v {
+				walk(nested)
+			}
+		}
+	}
+
+	walk(value)
+	return values
+}
+
+func fallbackNameFromTextValues(values []string) string {
+	for _, value := range values {
+		v := strings.TrimSpace(value)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "://") || strings.HasPrefix(v, "/") {
+			continue
+		}
+		if strings.Contains(strings.ToLower(v), "itemid-") {
+			continue
+		}
+		if strings.HasPrefix(v, "€") || strings.HasPrefix(v, "$") || strings.HasPrefix(v, "£") {
+			continue
+		}
+		if len(v) < 3 {
+			continue
+		}
+		return v
+	}
+	return ""
+}
+
+func extractIDFromText(text string) string {
+	candidates := []string{text}
+	if decoded := decodeText(text); decoded != text {
+		candidates = append(candidates, decoded)
+	}
+
+	for _, candidate := range candidates {
+		if id := extractTokenAfterMarker(candidate, "itemid-"); id != "" {
+			return id
+		}
+		if id := extractSegmentAfterMarker(candidate, "/item/"); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func extractVenueSlugFromText(text string) string {
+	candidates := []string{text}
+	if decoded := decodeText(text); decoded != text {
+		candidates = append(candidates, decoded)
+	}
+
+	for _, candidate := range candidates {
+		if slug := extractSegmentAfterMarker(candidate, "/venue/"); slug != "" {
+			return slug
+		}
+	}
+	return ""
+}
+
+func decodeText(text string) string {
+	decoded, err := url.QueryUnescape(text)
+	if err == nil {
+		return decoded
+	}
+	return text
+}
+
+func extractTokenAfterMarker(text, marker string) string {
+	idx := strings.Index(strings.ToLower(text), strings.ToLower(marker))
+	if idx < 0 {
+		return ""
+	}
+
+	start := idx + len(marker)
+	end := start
+
+	for end < len(text) {
+		c := text[end]
+		if (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' {
+			end++
+			continue
+		}
+		break
+	}
+
+	if end <= start {
+		return ""
+	}
+
+	return text[start:end]
+}
+
+func extractSegmentAfterMarker(text, marker string) string {
+	idx := strings.Index(strings.ToLower(text), strings.ToLower(marker))
+	if idx < 0 {
+		return ""
+	}
+
+	start := idx + len(marker)
+	if start >= len(text) {
+		return ""
+	}
+
+	end := start
+	for end < len(text) {
+		c := text[end]
+		if (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' {
+			end++
+			continue
+		}
+		break
+	}
+
+	if end <= start {
+		return ""
+	}
+
+	return text[start:end]
+}
+
+func toString(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return strings.TrimSpace(fmt.Sprintf("%v", v))
+	default:
+		return ""
+	}
+}
+
+func toDisplayString(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case map[string]interface{}:
+		for _, key := range []string{"text", "value", "name", "title", "label"} {
+			if raw, ok := v[key]; ok {
+				if text := toDisplayString(raw); text != "" {
+					return text
+				}
+			}
+		}
+		return ""
+	case []interface{}:
+		for _, item := range v {
+			if text := toDisplayString(item); text != "" {
+				return text
+			}
+		}
+		return ""
+	default:
+		return toString(value)
+	}
 }
 
 // setupHeaderRemoval intercepts network requests and removes specified headers.

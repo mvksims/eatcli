@@ -109,3 +109,190 @@ func TestRunAutomation_Failure_NoProfile(t *testing.T) {
 		t.Errorf("expected error to contain '%s', but got '%s'", expectedError, err.Error())
 	}
 }
+
+func TestExtractSearchProducts_BasicFields(t *testing.T) {
+	response := map[string]interface{}{
+		"sections": []interface{}{
+			map[string]interface{}{
+				"items": []interface{}{
+					map[string]interface{}{
+						"value": map[string]interface{}{
+							"id":    "3135258a5f2ffa0c518ab4b8",
+							"name":  "Selga biscuits condensed milk 180g",
+							"price": float64(289),
+							"venue": map[string]interface{}{
+								"id":   "62430901d7678f5b344972e4",
+								"slug": "wolt-market-grizinkalna",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	products := extractSearchProducts(response)
+	if len(products) != 1 {
+		t.Fatalf("expected 1 product, got %d", len(products))
+	}
+
+	got := products[0]
+	if got.ID != "3135258a5f2ffa0c518ab4b8" {
+		t.Fatalf("unexpected id: %s", got.ID)
+	}
+	if got.Name != "Selga biscuits condensed milk 180g" {
+		t.Fatalf("unexpected name: %s", got.Name)
+	}
+	if got.VenueID != "62430901d7678f5b344972e4" {
+		t.Fatalf("unexpected venue id: %s", got.VenueID)
+	}
+	if got.VenueSlug != "wolt-market-grizinkalna" {
+		t.Fatalf("unexpected venue slug: %s", got.VenueSlug)
+	}
+	if got.Price != float64(289) {
+		t.Fatalf("unexpected price: %#v", got.Price)
+	}
+}
+
+func TestExtractSearchProducts_FallbackFromURL(t *testing.T) {
+	response := map[string]interface{}{
+		"sections": []interface{}{
+			map[string]interface{}{
+				"items": []interface{}{
+					map[string]interface{}{
+						"value": map[string]interface{}{
+							"title": "Vafeļu torte piparkūku 300g Selga",
+							"venue": map[string]interface{}{
+								"id": "62430901d7678f5b344972e4",
+							},
+							"pricing": map[string]interface{}{
+								"price": map[string]interface{}{
+									"amount": float64(399),
+								},
+							},
+							"link": "/en/lva/riga/venue/wolt-market-grizinkalna/selga-cepumi-itemid-3135258a5f2ffa0c518ab4b8",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	products := extractSearchProducts(response)
+	if len(products) != 1 {
+		t.Fatalf("expected 1 product, got %d", len(products))
+	}
+
+	got := products[0]
+	if got.ID != "3135258a5f2ffa0c518ab4b8" {
+		t.Fatalf("expected id from URL fallback, got %s", got.ID)
+	}
+	if got.VenueSlug != "wolt-market-grizinkalna" {
+		t.Fatalf("expected venue slug from URL fallback, got %s", got.VenueSlug)
+	}
+	if got.Price != float64(399) {
+		t.Fatalf("expected normalized price amount, got %#v", got.Price)
+	}
+}
+
+func TestExtractSearchProducts_MissingIDStillReturnsProduct(t *testing.T) {
+	response := map[string]interface{}{
+		"sections": []interface{}{
+			map[string]interface{}{
+				"items": []interface{}{
+					map[string]interface{}{
+						"value": map[string]interface{}{
+							"title": map[string]interface{}{
+								"text": "Selga cream biscuits",
+							},
+							"price": float64(129),
+							"venue": map[string]interface{}{
+								"slug": "wolt-market-grizinkalna",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	products := extractSearchProducts(response)
+	if len(products) != 1 {
+		t.Fatalf("expected 1 product, got %d", len(products))
+	}
+
+	got := products[0]
+	if got.ID == "" {
+		t.Fatalf("expected fallback id to be generated")
+	}
+	if got.Name != "Selga cream biscuits" {
+		t.Fatalf("unexpected name: %s", got.Name)
+	}
+	if got.VenueSlug != "wolt-market-grizinkalna" {
+		t.Fatalf("unexpected venue slug: %s", got.VenueSlug)
+	}
+}
+
+func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
+	response := map[string]interface{}{
+		"sections": []interface{}{
+			map[string]interface{}{
+				"items": []interface{}{
+					map[string]interface{}{
+						"template": "search-menu-item",
+						"title":    "Selga šokolādes glazūrā 190g cepumi",
+						"menu_item": map[string]interface{}{
+							"id":       "a22bc220dd44c8f8daa8ef96",
+							"name":     "Selga šokolādes glazūrā 190g cepumi",
+							"price":    float64(289),
+							"venue_id": "62430901d7678f5b344972e4",
+						},
+						"link": map[string]interface{}{
+							"type": "menu-item-details",
+							"menu_item_details": map[string]interface{}{
+								"id":         "a22bc220dd44c8f8daa8ef96",
+								"price":      float64(289),
+								"venue_id":   "62430901d7678f5b344972e4",
+								"venue_slug": "wolt-market-grizinkalna",
+								"name":       "Selga šokolādes glazūrā 190g cepumi",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	products := extractSearchProducts(response)
+	if len(products) == 0 {
+		t.Fatalf("expected products from payload, got zero")
+	}
+
+	var matched *SearchProduct
+	for i := range products {
+		if products[i].Name == "Selga šokolādes glazūrā 190g cepumi" {
+			matched = &products[i]
+			break
+		}
+	}
+
+	if matched == nil {
+		t.Fatalf("expected to find known fixture product by name")
+	}
+
+	if matched.ID == "" || strings.HasPrefix(matched.ID, "section_") {
+		t.Fatalf("expected real product id from payload, got %q", matched.ID)
+	}
+	if matched.ID != "a22bc220dd44c8f8daa8ef96" {
+		t.Fatalf("unexpected product id: %s", matched.ID)
+	}
+	if matched.Price != float64(289) {
+		t.Fatalf("expected price 289, got %#v", matched.Price)
+	}
+	if matched.VenueID != "62430901d7678f5b344972e4" {
+		t.Fatalf("unexpected venue id: %s", matched.VenueID)
+	}
+	if matched.VenueSlug != "wolt-market-grizinkalna" {
+		t.Fatalf("unexpected venue slug: %s", matched.VenueSlug)
+	}
+}
