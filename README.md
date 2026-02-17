@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate web tasks that require a persistent login session. It provides `auth` for interactive login, `search` for querying Wolt items with the saved session, `basket add` for opening an item page and returning basket payload JSON, and `checkout` for opening a venue checkout page and clicking Send Order.
+This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add`/`basket remove` to adjust item quantities, and `checkout` to attempt order placement and surface checkout errors.
 
 ## Prerequisites
 
@@ -41,12 +41,13 @@ go run main.go <command> [options] [config.yml] [args...]
 -   `[options]` are command-specific flags.
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
--   For `basket add`, arguments are `<venue_slug> <item_id>`.
+-   `basket` with no additional arguments returns current basket JSON.
+-   For `basket add` and `basket remove`, arguments are `<venue_slug> <item_id>`.
 -   For `checkout`, argument is `<venue_slug>`.
 
 ### `auth` Command
 
-This command opens a browser window for you to perform a manual login. Your session data (cookies, local storage, etc.) will be saved to the `user_data_dir`.
+This command is your one-time sign-in step. It stores your session in `user_data_dir` so shopping commands can reuse it without requiring login each time.
 
 **Options:**
 - `--erase-data`: Force deletion of existing session data before authenticating. Use this to start a fresh login session.
@@ -84,42 +85,52 @@ Example output shape:
 }
 ```
 
+### `basket` Command
+
+This command returns your current basket as JSON.
+
+Output contains a `baskets` array. Each basket includes:
+- `id`
+- `total`
+- `venue_slug`
+- `items` (each item includes `id`, `count`, `total`, `image_url`, `name`, `is_available`, `price`)
+
+**Example:**
+```bash
+go run main.go basket
+```
+
 ### `basket add` Command
 
-This command takes `venue_slug` and `item_id`, opens:
+This command increases quantity for a specific item in your basket and prints the resulting basket state as JSON.
 
-`https://wolt.com/en/lva/riga/venue/<venue_slug>/itemid-<item_id>`
+If a "resume shopping" style modal appears, the command waits up to 30 seconds and confirms it automatically before continuing.
 
-waits for the page to load, clicks the button with `data-test-id="product-modal.total-price"`, then captures the first successful `GET` response that matches:
-
-`https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets`
-
-If a restore-order modal appears after opening the product page, it first clicks:
-
-`[data-test-id="restore-order-modal.confirm"]`
-
-and prints it as JSON.
+Output uses the same `baskets` shape as `basket`.
 
 **Example:**
 ```bash
 go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 ```
 
+### `basket remove` Command
+
+This command decreases quantity for a specific item in your basket and prints the resulting basket state as JSON.
+
+It mirrors `basket add`, but applies a decrement action instead of increment.
+
+Output uses the same `baskets` shape as `basket`.
+
+**Example:**
+```bash
+go run main.go basket remove wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
+```
+
 ### `checkout` Command
 
-This command takes `venue_slug`, opens:
+This command attempts to place the order for a venue by triggering the send-order action.
 
-`https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout`
-
-waits for the page to fully load, then clicks:
-
-`[data-test-id="SendOrderButton"]`
-
-After clicking, it waits up to 10 seconds for:
-
-`GenericCheckoutErrorModal`
-
-If the modal appears, the command returns its inner text in the JSON output field `generic_checkout_error_modal`.
+After attempting checkout, it waits up to 10 seconds for `GenericCheckoutErrorModal`. If it appears, the command returns the modal message in `generic_checkout_error_modal`.
 
 **Example:**
 ```bash

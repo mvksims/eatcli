@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -366,7 +367,7 @@ func TestBasketRestoreModalWaitTimeout(t *testing.T) {
 		{
 			name:    "uses max wait for zero timeout",
 			input:   0,
-			wantOut: 5 * time.Second,
+			wantOut: 30 * time.Second,
 		},
 		{
 			name:    "uses provided timeout when shorter",
@@ -375,8 +376,8 @@ func TestBasketRestoreModalWaitTimeout(t *testing.T) {
 		},
 		{
 			name:    "caps long timeout",
-			input:   30 * time.Second,
-			wantOut: 5 * time.Second,
+			input:   90 * time.Second,
+			wantOut: 30 * time.Second,
 		},
 	}
 
@@ -388,5 +389,70 @@ func TestBasketRestoreModalWaitTimeout(t *testing.T) {
 				t.Fatalf("unexpected timeout clamp: got %v want %v", got, tc.wantOut)
 			}
 		})
+	}
+}
+
+func TestExtractBasketOutputs_RealPayload(t *testing.T) {
+	data, err := os.ReadFile("payloads/wolt-baskets-payload.json")
+	if err != nil {
+		t.Fatalf("failed to read basket payload fixture: %v", err)
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("failed to unmarshal basket payload fixture: %v", err)
+	}
+
+	baskets := extractBasketOutputs(payload)
+	if len(baskets) != 1 {
+		t.Fatalf("expected 1 basket, got %d", len(baskets))
+	}
+
+	basket := baskets[0]
+	if basket.ID != "69939718285af11962aae8b3" {
+		t.Fatalf("unexpected basket id: %s", basket.ID)
+	}
+	if basket.Total != "€8.93" {
+		t.Fatalf("unexpected basket total: %#v", basket.Total)
+	}
+	if basket.VenueSlug != "wolt-market-grizinkalna" {
+		t.Fatalf("unexpected venue slug: %s", basket.VenueSlug)
+	}
+	if len(basket.Items) != 4 {
+		t.Fatalf("expected 4 basket items, got %d", len(basket.Items))
+	}
+
+	firstItem := basket.Items[0]
+	if firstItem.ID != "0e51f3f964f104b1f4a91650" {
+		t.Fatalf("unexpected first item id: %s", firstItem.ID)
+	}
+	if firstItem.Count != 1 {
+		t.Fatalf("unexpected first item count: %d", firstItem.Count)
+	}
+	if firstItem.Total != int64(399) {
+		t.Fatalf("unexpected first item total: %#v", firstItem.Total)
+	}
+	if firstItem.ImageURL != "https://imageproxy.wolt.com/assets/683853f5e3e69835ce1c4105" {
+		t.Fatalf("unexpected first item image_url: %s", firstItem.ImageURL)
+	}
+	if firstItem.Name != "Selga mini vafeles ar vaniļas garšu 250g" {
+		t.Fatalf("unexpected first item name: %s", firstItem.Name)
+	}
+	if !firstItem.IsAvailable {
+		t.Fatalf("expected first item to be available")
+	}
+	if firstItem.Price != float64(399) {
+		t.Fatalf("unexpected first item price: %#v", firstItem.Price)
+	}
+
+	unavailableItem := basket.Items[2]
+	if unavailableItem.ID != "52a7772d08d5b4b5abe2900a" {
+		t.Fatalf("unexpected unavailable item id: %s", unavailableItem.ID)
+	}
+	if unavailableItem.IsAvailable {
+		t.Fatalf("expected unavailable item is_available=false")
+	}
+	if unavailableItem.ImageURL != "" {
+		t.Fatalf("expected empty image_url for unavailable fixture item, got %q", unavailableItem.ImageURL)
 	}
 }

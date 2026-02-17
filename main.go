@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,11 @@ type YamlConfig struct {
 	Headless          bool   `yaml:"headless"`
 	TimeoutSeconds    int    `yaml:"timeout_seconds"`
 }
+
+const (
+	defaultBasketCaptureURL = "https://wolt.com/en/discovery"
+	basketAPIURL            = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
+)
 
 // loadConfig reads a YAML file from the given path and returns a Config struct.
 func loadConfig(path string) (Config, error) {
@@ -124,7 +130,10 @@ func main() {
 		}
 	case "basket":
 		if len(queryParts) == 0 {
-			log.Fatalf("Basket command requires a subcommand. Use 'basket add <venue_slug> <item_id>'.")
+			if err := runBasket(cfg); err != nil {
+				log.Fatalf("Basket failed: %v", err)
+			}
+			break
 		}
 		switch strings.ToLower(queryParts[0]) {
 		case "add":
@@ -136,8 +145,17 @@ func main() {
 			if err := runBasketAdd(cfg, venueSlug, itemID); err != nil {
 				log.Fatalf("Basket add failed: %v", err)
 			}
+		case "remove":
+			if len(queryParts) != 3 {
+				log.Fatalf("Basket remove requires exactly 2 arguments: <venue_slug> <item_id>.")
+			}
+			venueSlug := queryParts[1]
+			itemID := queryParts[2]
+			if err := runBasketRemove(cfg, venueSlug, itemID); err != nil {
+				log.Fatalf("Basket remove failed: %v", err)
+			}
 		default:
-			log.Fatalf("Unknown basket subcommand: %s. Use 'basket add <venue_slug> <item_id>'.", queryParts[0])
+			log.Fatalf("Unknown basket subcommand: %s. Use 'basket', 'basket add <venue_slug> <item_id>' or 'basket remove <venue_slug> <item_id>'.", queryParts[0])
 		}
 	case "checkout":
 		if len(queryParts) != 1 {
@@ -186,18 +204,20 @@ func simulateHumanBehavior(page playwright.Page) error {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: go run main.go <command> [options] [config.yml]")
 	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintln(os.Stderr, "  auth         Run the interactive authentication process.")
-	fmt.Fprintln(os.Stderr, "  search       Search for items on Wolt.")
-	fmt.Fprintln(os.Stderr, "  basket       Basket operations. Currently supports: add.")
-	fmt.Fprintln(os.Stderr, "  checkout     Open venue checkout page and click Send Order button.")
+	fmt.Fprintln(os.Stderr, "  auth         Sign in once to save your shopping session.")
+	fmt.Fprintln(os.Stderr, "  search       Find products and return structured product details.")
+	fmt.Fprintln(os.Stderr, "  basket       View current basket or adjust item quantities (add/remove).")
+	fmt.Fprintln(os.Stderr, "  checkout     Attempt order placement and report checkout error details if shown.")
 	fmt.Fprintln(os.Stderr, "\nGlobal Options:")
 	fmt.Fprintln(os.Stderr, "  --help, -h   Show this help message and exit.")
 	fmt.Fprintln(os.Stderr, "\nOptions for 'auth' command:")
 	fmt.Fprintln(os.Stderr, "  --erase-data Force deletion of existing session data before authenticating.")
 	fmt.Fprintln(os.Stderr, "\nArguments:")
 	fmt.Fprintln(os.Stderr, "  [config.yml] (Optional) Path to the config file. Defaults to 'config.yml'.")
-	fmt.Fprintln(os.Stderr, "  basket add <venue_slug> <item_id> Opens item page, clicks add button, and prints basket JSON.")
-	fmt.Fprintln(os.Stderr, "  checkout <venue_slug> Opens checkout page and clicks Send Order.")
+	fmt.Fprintln(os.Stderr, "  basket Returns current basket JSON.")
+	fmt.Fprintln(os.Stderr, "  basket add <venue_slug> <item_id> Increases item quantity and prints updated basket JSON.")
+	fmt.Fprintln(os.Stderr, "  basket remove <venue_slug> <item_id> Decreases item quantity and prints updated basket JSON.")
+	fmt.Fprintln(os.Stderr, "  checkout <venue_slug> Attempts order placement and reports checkout errors when present.")
 }
 
 func runAuth(cfg Config, eraseData bool, authURL string) error {
@@ -642,9 +662,39 @@ func runSearch(cfg Config, query string) error {
 	return nil
 }
 
-func runBasketAdd(cfg Config, venueSlug, itemID string) error {
-	targetURL := buildBasketAddURL(venueSlug, itemID)
-	fmt.Printf("Opening basket add page: %s\n", targetURL)
+type basketResponseEvent struct {
+	body   []byte
+	err    error
+	url    string
+	status int
+	at     time.Time
+}
+
+type basketResponseData struct {
+	URL    string
+	Status int
+	JSON   interface{}
+}
+
+type BasketOutput struct {
+	ID        string             `json:"id"`
+	Total     interface{}        `json:"total"`
+	VenueSlug string             `json:"venue_slug"`
+	Items     []BasketItemOutput `json:"items"`
+}
+
+type BasketItemOutput struct {
+	ID          string      `json:"id"`
+	Count       int         `json:"count"`
+	Total       interface{} `json:"total"`
+	ImageURL    string      `json:"image_url"`
+	Name        string      `json:"name"`
+	IsAvailable bool        `json:"is_available"`
+	Price       interface{} `json:"price"`
+}
+
+func runBasket(cfg Config) error {
+	fmt.Println("Loading current basket...")
 
 	pw, err := playwright.Run()
 	if err != nil {
@@ -652,12 +702,12 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 	}
 	defer pw.Stop()
 
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
+	if _, err := os.Stat(cfg.UserDataDir); os.IsNotExist(err) {
+		return fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", cfg.UserDataDir)
 	}
 
 	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for basket add
+		Headless:  playwright.Bool(cfg.Headless),
 		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
 	})
 	if err != nil {
@@ -696,45 +746,129 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 		return fmt.Errorf("could not set up header removal: %w", err)
 	}
 
-	type basketRes struct {
-		body   []byte
-		err    error
-		url    string
-		status int
-		at     time.Time
+	resChan := attachBasketResponseCapture(page)
+	requestStartedAt := time.Now()
+	targetURL := defaultBasketCaptureURL
+	if cfg.SuccessURLPattern != "" {
+		targetURL = cfg.SuccessURLPattern
 	}
-	resChan := make(chan basketRes, 10)
-
-	page.OnResponse(func(res playwright.Response) {
-		if !isBasketPageRequest(res.Request().Method(), res.URL()) {
-			return
-		}
-
-		go func() {
-			b, err := res.Body()
-			select {
-			case resChan <- basketRes{
-				body:   b,
-				err:    err,
-				url:    res.URL(),
-				status: res.Status(),
-				at:     time.Now(),
-			}:
-			default:
-				// Keep processing without blocking the event loop.
-			}
-		}()
-	})
 
 	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to basket add URL: %w", err)
+		return fmt.Errorf("could not go to basket page: %w", err)
 	}
 
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 		State:   playwright.LoadStateLoad,
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
-		return fmt.Errorf("basket add page did not fully load: %w", err)
+		return fmt.Errorf("basket page did not fully load: %w", err)
+	}
+
+	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, requestStartedAt)
+	if err != nil {
+		return err
+	}
+
+	baskets := extractBasketOutputs(basketRes.JSON)
+
+	result := map[string]interface{}{
+		"request": map[string]interface{}{
+			"url":    basketRes.URL,
+			"status": basketRes.Status,
+		},
+		"count":   len(baskets),
+		"baskets": baskets,
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(resultJSON))
+	return nil
+}
+
+func runBasketAdd(cfg Config, venueSlug, itemID string) error {
+	return runBasketItemAction(
+		cfg,
+		venueSlug,
+		itemID,
+		`[data-test-id="product-modal.total-price"]`,
+		"add",
+	)
+}
+
+func runBasketRemove(cfg Config, venueSlug, itemID string) error {
+	return runBasketItemAction(
+		cfg,
+		venueSlug,
+		itemID,
+		`[data-test-id="product-modal.quantity.decrement"]`,
+		"remove",
+	)
+}
+
+func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionName string) error {
+	targetURL := buildBasketAddURL(venueSlug, itemID)
+	fmt.Printf("Opening basket %s page: %s\n", actionName, targetURL)
+
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("could not start playwright: %w", err)
+	}
+	defer pw.Stop()
+
+	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+		return fmt.Errorf("could not create user data directory: %w", err)
+	}
+
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(false), // Always interactive for basket actions
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	})
+	if err != nil {
+		return fmt.Errorf("could not launch persistent context: %w", err)
+	}
+	defer ctx.Close()
+
+	script := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => false });
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			],
+		});
+		const originalQuery = navigator.permissions.query;
+		navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications'
+				? Promise.resolve({ state: 'prompt' })
+				: originalQuery(parameters)
+		);
+	`
+	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
+		return fmt.Errorf("could not add init script: %w", err)
+	}
+
+	page, err := ctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("could not create new page: %w", err)
+	}
+
+	if err := page.SetViewportSize(1440, 810); err != nil {
+		return fmt.Errorf("could not set viewport size: %w", err)
+	}
+
+	if err := setupHeaderRemoval(page); err != nil {
+		return fmt.Errorf("could not set up header removal: %w", err)
+	}
+
+	resChan := attachBasketResponseCapture(page)
+
+	if _, err := page.Goto(targetURL); err != nil {
+		return fmt.Errorf("could not go to basket %s URL: %w", actionName, err)
+	}
+
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("basket %s page did not fully load: %w", actionName, err)
 	}
 
 	restoreClicked, err := maybeConfirmRestoreOrderModal(page, cfg.Timeout)
@@ -751,61 +885,40 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 		}
 	}
 
-	buttonSelector := `[data-test-id="product-modal.total-price"]`
 	button := page.Locator(buttonSelector).Nth(0)
 	if err := button.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
-		return fmt.Errorf("could not find basket add button '%s': %w", buttonSelector, err)
+		return fmt.Errorf("could not find basket %s button '%s': %w", actionName, buttonSelector, err)
 	}
 
 	clickStartedAt := time.Now()
 	if err := button.Click(); err != nil {
-		return fmt.Errorf("could not click basket add button '%s': %w", buttonSelector, err)
+		return fmt.Errorf("could not click basket %s button '%s': %w", actionName, buttonSelector, err)
 	}
 
-	var lastErr error
-	timeout := time.After(cfg.Timeout)
-	for {
-		select {
-		case res := <-resChan:
-			if res.at.Before(clickStartedAt) {
-				continue
-			}
-			if res.err != nil {
-				lastErr = res.err
-				continue
-			}
-			if res.status < 200 || res.status >= 300 {
-				continue
-			}
-
-			var responseJSON interface{}
-			if err := json.Unmarshal(res.body, &responseJSON); err != nil {
-				lastErr = err
-				continue
-			}
-
-			result := map[string]interface{}{
-				"venue_slug": venueSlug,
-				"item_id":    itemID,
-				"request": map[string]interface{}{
-					"url":    res.url,
-					"status": res.status,
-				},
-				"basket": responseJSON,
-			}
-			resultJSON, _ := json.MarshalIndent(result, "", "  ")
-			fmt.Println(string(resultJSON))
-			return nil
-		case <-timeout:
-			if lastErr != nil {
-				return fmt.Errorf("timed out waiting for baskets API JSON response, last error: %w", lastErr)
-			}
-			return fmt.Errorf("timed out waiting for API response from https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets")
-		}
+	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
+	if err != nil {
+		return err
 	}
+
+	baskets := extractBasketOutputs(basketRes.JSON)
+
+	result := map[string]interface{}{
+		"action":     actionName,
+		"venue_slug": venueSlug,
+		"item_id":    itemID,
+		"request": map[string]interface{}{
+			"url":    basketRes.URL,
+			"status": basketRes.Status,
+		},
+		"count":   len(baskets),
+		"baskets": baskets,
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(resultJSON))
+	return nil
 }
 
 func runCheckout(cfg Config, venueSlug string) error {
@@ -905,12 +1018,326 @@ func runCheckout(cfg Config, venueSlug string) error {
 	return nil
 }
 
+func attachBasketResponseCapture(page playwright.Page) <-chan basketResponseEvent {
+	resChan := make(chan basketResponseEvent, 10)
+
+	page.OnResponse(func(res playwright.Response) {
+		if !isBasketPageRequest(res.Request().Method(), res.URL()) {
+			return
+		}
+
+		go func() {
+			b, err := res.Body()
+			select {
+			case resChan <- basketResponseEvent{
+				body:   b,
+				err:    err,
+				url:    res.URL(),
+				status: res.Status(),
+				at:     time.Now(),
+			}:
+			default:
+				// Keep processing without blocking the event loop.
+			}
+		}()
+	})
+
+	return resChan
+}
+
+func waitForBasketAPIResponse(resChan <-chan basketResponseEvent, timeout time.Duration, minTime time.Time) (basketResponseData, error) {
+	var (
+		result  basketResponseData
+		lastErr error
+	)
+	timer := time.After(timeout)
+
+	for {
+		select {
+		case res := <-resChan:
+			if res.at.Before(minTime) {
+				continue
+			}
+			if res.err != nil {
+				lastErr = res.err
+				continue
+			}
+			if res.status < 200 || res.status >= 300 {
+				lastErr = fmt.Errorf("received non-success baskets response status %d from %s", res.status, res.url)
+				continue
+			}
+
+			var responseJSON interface{}
+			if err := json.Unmarshal(res.body, &responseJSON); err != nil {
+				lastErr = err
+				continue
+			}
+
+			result = basketResponseData{
+				URL:    res.url,
+				Status: res.status,
+				JSON:   responseJSON,
+			}
+			return result, nil
+		case <-timer:
+			if lastErr != nil {
+				return result, fmt.Errorf("timed out waiting for baskets API JSON response, last error: %w", lastErr)
+			}
+			return result, fmt.Errorf("timed out waiting for API response from %s", basketAPIURL)
+		}
+	}
+}
+
+func extractBasketOutputs(responseJSON interface{}) []BasketOutput {
+	responseMap, ok := responseJSON.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	var basketsRaw []interface{}
+	if basketMap := asMap(responseMap["basket"]); basketMap != nil {
+		if arr, ok := basketMap["baskets"].([]interface{}); ok {
+			basketsRaw = arr
+		}
+	}
+	if basketsRaw == nil {
+		if arr, ok := responseMap["baskets"].([]interface{}); ok {
+			basketsRaw = arr
+		}
+	}
+	if basketsRaw == nil {
+		basketsRaw = findNestedArrayByKey(responseMap, "baskets")
+	}
+	if len(basketsRaw) == 0 {
+		return nil
+	}
+
+	outputs := make([]BasketOutput, 0, len(basketsRaw))
+	for _, basketRaw := range basketsRaw {
+		basketMap := asMap(basketRaw)
+		if basketMap == nil {
+			continue
+		}
+
+		output := BasketOutput{
+			ID:        firstStringFromScope(basketMap, []string{"id", "basket_id"}),
+			Total:     extractBasketTotal(basketMap),
+			VenueSlug: extractBasketVenueSlug(basketMap),
+			Items:     extractBasketItemOutputs(basketMap),
+		}
+		outputs = append(outputs, output)
+	}
+
+	return outputs
+}
+
+func extractBasketTotal(basketMap map[string]interface{}) interface{} {
+	if total, ok := basketMap["total"]; ok {
+		return total
+	}
+	if telemetry := asMap(basketMap["telemetry"]); telemetry != nil {
+		if total, ok := telemetry["basket_total"]; ok {
+			return total
+		}
+	}
+	return nil
+}
+
+func extractBasketVenueSlug(basketMap map[string]interface{}) string {
+	if venueMap := asMap(basketMap["venue"]); venueMap != nil {
+		if slug := firstStringFromScope(venueMap, []string{"slug", "venue_slug"}); slug != "" {
+			return slug
+		}
+	}
+	return firstStringFromScope(basketMap, []string{"venue_slug", "slug"})
+}
+
+func extractBasketItemOutputs(basketMap map[string]interface{}) []BasketItemOutput {
+	var itemsRaw []interface{}
+	if arr, ok := basketMap["items"].([]interface{}); ok {
+		itemsRaw = arr
+	} else {
+		itemsRaw = findNestedArrayByKey(basketMap, "items")
+	}
+	if len(itemsRaw) == 0 {
+		return nil
+	}
+
+	items := make([]BasketItemOutput, 0, len(itemsRaw))
+	for _, itemRaw := range itemsRaw {
+		itemMap := asMap(itemRaw)
+		if itemMap == nil {
+			continue
+		}
+
+		item := BasketItemOutput{
+			ID:       firstStringFromScope(itemMap, []string{"id", "item_id", "product_id"}),
+			Name:     firstDisplayStringFromScope(itemMap, []string{"name", "title"}),
+			ImageURL: extractBasketItemImageURL(itemMap),
+		}
+
+		if count, ok := toInt(itemMap["count"]); ok {
+			item.Count = count
+		}
+		if isAvailable, ok := toBool(itemMap["is_available"]); ok {
+			item.IsAvailable = isAvailable
+		}
+		if price, ok := itemMap["price"]; ok {
+			item.Price = normalizePrice(price)
+		}
+		item.Total = calculateBasketItemTotal(item.Count, item.Price)
+		items = append(items, item)
+	}
+
+	return items
+}
+
+func extractBasketItemImageURL(itemMap map[string]interface{}) string {
+	if imageMap := asMap(itemMap["image"]); imageMap != nil {
+		if imageURL := firstStringFromScope(imageMap, []string{"url", "image_url"}); imageURL != "" {
+			return imageURL
+		}
+	}
+	if imageURL := firstStringFromScope(itemMap, []string{"image_url"}); imageURL != "" {
+		return imageURL
+	}
+	if rawImage, ok := itemMap["image"]; ok {
+		return toString(rawImage)
+	}
+	return ""
+}
+
+func calculateBasketItemTotal(count int, price interface{}) interface{} {
+	if count <= 0 {
+		return nil
+	}
+
+	priceValue, ok := toFloat64(price)
+	if !ok {
+		return nil
+	}
+
+	total := float64(count) * priceValue
+	if total == float64(int64(total)) {
+		return int64(total)
+	}
+	return total
+}
+
+func toInt(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), true
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), true
+	case uint64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, false
+		}
+		if i, err := strconv.Atoi(s); err == nil {
+			return i, true
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			return int(f), true
+		}
+	}
+	return 0, false
+}
+
+func toFloat64(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int8:
+		return float64(v), true
+	case int16:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint8:
+		return float64(v), true
+	case uint16:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	}
+	return 0, false
+}
+
+func toBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		s := strings.TrimSpace(strings.ToLower(v))
+		switch s {
+		case "true", "1", "yes", "y":
+			return true, true
+		case "false", "0", "no", "n":
+			return false, true
+		default:
+			return false, false
+		}
+	case int, int8, int16, int32, int64:
+		i, _ := toInt(v)
+		return i != 0, true
+	case uint, uint8, uint16, uint32, uint64:
+		i, _ := toInt(v)
+		return i != 0, true
+	case float32, float64:
+		f, _ := toFloat64(v)
+		return f != 0, true
+	}
+	return false, false
+}
+
 func isBasketPageRequest(method, requestURL string) bool {
 	if !strings.EqualFold(method, "GET") {
 		return false
 	}
 
-	return strings.Contains(requestURL, "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets")
+	return strings.Contains(requestURL, basketAPIURL)
 }
 
 func maybeConfirmRestoreOrderModal(page playwright.Page, timeout time.Duration) (bool, error) {
@@ -936,7 +1363,7 @@ func maybeConfirmRestoreOrderModal(page playwright.Page, timeout time.Duration) 
 }
 
 func basketRestoreModalWaitTimeout(timeout time.Duration) time.Duration {
-	const maxWait = 5 * time.Second
+	const maxWait = 30 * time.Second
 	if timeout <= 0 {
 		return maxWait
 	}

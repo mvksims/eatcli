@@ -7,8 +7,9 @@ This document contains notes and context from the Gemini CLI agent regarding the
 This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for command-based flows:
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
-3.  **`basket add` command:** A non-interactive flow that opens a specific Wolt item page using `venue_slug` and `item_id`, waits for load, clicks the product total-price button, captures the baskets API response, and prints JSON.
-4.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
+3.  **`basket` command:** Returns the current basket payload as JSON for the active session.
+4.  **`basket add` / `basket remove` commands:** Non-interactive flows that open a specific Wolt item page using `venue_slug` and `item_id`, wait for load, click either add/decrement product controls, capture the baskets API response, and print JSON.
+5.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
 
 ## Key Technologies and Architecture
 
@@ -41,8 +42,11 @@ During initial development, several challenges were encountered, primarily revol
 -   **Optional Config Argument:** The CLI was updated to make the `config.yml` argument optional. It now defaults to `config.yml` if no path is provided.
 -   **Search Output Expansion:** The `search` command now returns a `products` array with per-product metadata (`id`, `name`, `price`, `venue_id`, `venue_slug`) in addition to the keyword and count.
 -   **Search Payload Parsing:** The `search` parser now supports Wolt item payloads where fields are nested under `items[].menu_item` and/or `items[].link.menu_item_details`, which fixed missing `id`, `price`, and `venue_slug` in results.
+-   **Basket View Command:** Added `basket` (without subcommands) to return the current basket JSON.
 -   **Basket Add Command:** `basket add <venue_slug> <item_id>` now waits for page load, clicks `[data-test-id="product-modal.total-price"]`, captures a successful `GET` response for `https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets`, and prints the response JSON.
--   **Basket Restore Modal Handling:** `basket add` now checks for `[data-test-id="restore-order-modal.confirm"]` after initial page load and clicks it when present before attempting add-to-basket.
+-   **Basket Remove Command:** Added `basket remove <venue_slug> <item_id>` with the same flow as `basket add`, but it clicks `[data-test-id="product-modal.quantity.decrement"]` before collecting the baskets API response JSON.
+-   **Basket Output Shape:** Basket commands now normalize output into a `baskets` array where each basket includes `id`, `total`, `venue_slug`, and `items` (`id`, `count`, `total`, `image_url`, `name`, `is_available`, `price`).
+-   **Basket Restore Modal Handling:** Basket item actions now wait up to 30 seconds for `[data-test-id="restore-order-modal.confirm"]` after initial page load and click it when present before attempting add/remove.
 -   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
 -   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
 
