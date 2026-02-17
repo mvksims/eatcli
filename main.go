@@ -146,16 +146,9 @@ func main() {
 				log.Fatalf("Basket add failed: %v", err)
 			}
 		case "remove":
-			if len(queryParts) != 3 {
-				log.Fatalf("Basket remove requires exactly 2 arguments: <venue_slug> <item_id>.")
-			}
-			venueSlug := queryParts[1]
-			itemID := queryParts[2]
-			if err := runBasketRemove(cfg, venueSlug, itemID); err != nil {
-				log.Fatalf("Basket remove failed: %v", err)
-			}
+			log.Fatalf("Basket remove has been removed due to unreliable behavior. Use 'basket' to inspect basket JSON.")
 		default:
-			log.Fatalf("Unknown basket subcommand: %s. Use 'basket', 'basket add <venue_slug> <item_id>' or 'basket remove <venue_slug> <item_id>'.", queryParts[0])
+			log.Fatalf("Unknown basket subcommand: %s. Use 'basket' or 'basket add <venue_slug> <item_id>'.", queryParts[0])
 		}
 	case "checkout":
 		if len(queryParts) != 1 {
@@ -206,7 +199,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  auth         Sign in once to save your shopping session.")
 	fmt.Fprintln(os.Stderr, "  search       Find products and return structured product details.")
-	fmt.Fprintln(os.Stderr, "  basket       View current basket or adjust item quantities (add/remove).")
+	fmt.Fprintln(os.Stderr, "  basket       View current basket or add items.")
 	fmt.Fprintln(os.Stderr, "  checkout     Attempt order placement and report checkout error details if shown.")
 	fmt.Fprintln(os.Stderr, "\nGlobal Options:")
 	fmt.Fprintln(os.Stderr, "  --help, -h   Show this help message and exit.")
@@ -216,7 +209,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  [config.yml] (Optional) Path to the config file. Defaults to 'config.yml'.")
 	fmt.Fprintln(os.Stderr, "  basket Returns current basket JSON.")
 	fmt.Fprintln(os.Stderr, "  basket add <venue_slug> <item_id> Increases item quantity and prints updated basket JSON.")
-	fmt.Fprintln(os.Stderr, "  basket remove <venue_slug> <item_id> Decreases item quantity and prints updated basket JSON.")
 	fmt.Fprintln(os.Stderr, "  checkout <venue_slug> Attempts order placement and reports checkout errors when present.")
 }
 
@@ -794,16 +786,6 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 	)
 }
 
-func runBasketRemove(cfg Config, venueSlug, itemID string) error {
-	return runBasketItemAction(
-		cfg,
-		venueSlug,
-		itemID,
-		`[data-test-id="product-modal.quantity.decrement"]`,
-		"remove",
-	)
-}
-
 func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionName string) error {
 	targetURL := buildBasketAddURL(venueSlug, itemID)
 	fmt.Printf("Opening basket %s page: %s\n", actionName, targetURL)
@@ -1343,23 +1325,44 @@ func isBasketPageRequest(method, requestURL string) bool {
 func maybeConfirmRestoreOrderModal(page playwright.Page, timeout time.Duration) (bool, error) {
 	selector := `[data-test-id="restore-order-modal.confirm"]`
 	waitTimeout := basketRestoreModalWaitTimeout(timeout)
+	deadline := time.Now().Add(waitTimeout + basketRestoreModalExtraWaitTimeout())
+	button := page.Locator(selector).Nth(0)
 
-	button, err := page.WaitForSelector(selector, playwright.PageWaitForSelectorOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
-	})
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "timeout") {
-			return false, nil
+	for time.Now().Before(deadline) {
+		waitChunk := minDuration(3*time.Second, time.Until(deadline))
+		if waitChunk <= 0 {
+			break
 		}
-		return false, fmt.Errorf("could not inspect restore-order confirm button '%s': %w", selector, err)
+
+		if err := button.WaitFor(playwright.LocatorWaitForOptions{
+			State:   playwright.WaitForSelectorStateVisible,
+			Timeout: playwright.Float(float64(waitChunk.Milliseconds())),
+		}); err != nil {
+			if isPlaywrightTimeoutError(err) {
+				continue
+			}
+			return false, fmt.Errorf("could not inspect restore-order confirm button '%s': %w", selector, err)
+		}
+
+		clickChunk := minDuration(3*time.Second, time.Until(deadline))
+		if clickChunk <= 0 {
+			break
+		}
+
+		if err := button.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(float64(clickChunk.Milliseconds())),
+		}); err != nil {
+			if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
+				time.Sleep(150 * time.Millisecond)
+				continue
+			}
+			return false, fmt.Errorf("could not click restore-order confirm button '%s': %w", selector, err)
+		}
+
+		return true, nil
 	}
 
-	if err := button.Click(); err != nil {
-		return false, fmt.Errorf("could not click restore-order confirm button '%s': %w", selector, err)
-	}
-
-	return true, nil
+	return false, nil
 }
 
 func basketRestoreModalWaitTimeout(timeout time.Duration) time.Duration {
@@ -1371,6 +1374,43 @@ func basketRestoreModalWaitTimeout(timeout time.Duration) time.Duration {
 		return timeout
 	}
 	return maxWait
+}
+
+func basketRestoreModalExtraWaitTimeout() time.Duration {
+	return 10 * time.Second
+}
+
+func isPlaywrightTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "timeout")
+}
+
+func isRetryableRestoreModalClickError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	retryableSnippets := []string{
+		"not attached to the dom",
+		"element is not attached",
+		"element is detached",
+	}
+	for _, snippet := range retryableSnippets {
+		if strings.Contains(message, snippet) {
+			return true
+		}
+	}
+	return false
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func buildBasketAddURL(venueSlug, itemID string) string {

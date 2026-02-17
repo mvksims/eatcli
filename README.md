@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add`/`basket remove` to adjust item quantities, and `checkout` to attempt order placement and surface checkout errors.
+This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, and `checkout` to attempt order placement and surface checkout errors.
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ go run main.go <command> [options] [config.yml] [args...]
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
 -   `basket` with no additional arguments returns current basket JSON.
--   For `basket add` and `basket remove`, arguments are `<venue_slug> <item_id>`.
+-   For `basket add`, arguments are `<venue_slug> <item_id>`.
 -   For `checkout`, argument is `<venue_slug>`.
 
 ### `auth` Command
@@ -104,26 +104,13 @@ go run main.go basket
 
 This command increases quantity for a specific item in your basket and prints the resulting basket state as JSON.
 
-If a "resume shopping" style modal appears, the command waits up to 30 seconds and confirms it automatically before continuing.
+If a "resume shopping" style modal appears, the command waits up to 30 seconds plus a short grace period, and retries modal confirmation if the button is re-rendered during click.
 
 Output uses the same `baskets` shape as `basket`.
 
 **Example:**
 ```bash
 go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
-```
-
-### `basket remove` Command
-
-This command decreases quantity for a specific item in your basket and prints the resulting basket state as JSON.
-
-It mirrors `basket add`, but applies a decrement action instead of increment.
-
-Output uses the same `baskets` shape as `basket`.
-
-**Example:**
-```bash
-go run main.go basket remove wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 ```
 
 ### `checkout` Command

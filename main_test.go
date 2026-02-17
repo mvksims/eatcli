@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -454,5 +455,48 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	}
 	if unavailableItem.ImageURL != "" {
 		t.Fatalf("expected empty image_url for unavailable fixture item, got %q", unavailableItem.ImageURL)
+	}
+}
+
+func TestIsRetryableRestoreModalClickError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		retryable bool
+	}{
+		{
+			name:      "matches not attached wording",
+			err:       errors.New(`playwright: Element is not attached to the DOM`),
+			retryable: true,
+		},
+		{
+			name:      "matches detached wording",
+			err:       errors.New(`playwright: element is detached from DOM`),
+			retryable: true,
+		},
+		{
+			name:      "does not match other errors",
+			err:       errors.New(`playwright: strict mode violation`),
+			retryable: false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := isRetryableRestoreModalClickError(tc.err)
+			if got != tc.retryable {
+				t.Fatalf("unexpected retryable result: got %v want %v", got, tc.retryable)
+			}
+		})
+	}
+}
+
+func TestIsPlaywrightTimeoutError(t *testing.T) {
+	if !isPlaywrightTimeoutError(errors.New("Timeout 30000ms exceeded")) {
+		t.Fatalf("expected timeout detector to match timeout error")
+	}
+	if isPlaywrightTimeoutError(errors.New("some other failure")) {
+		t.Fatalf("expected timeout detector to ignore non-timeout error")
 	}
 }
