@@ -104,7 +104,12 @@ go run main.go basket
 
 This command increases quantity for a specific item in your basket and prints the resulting basket state as JSON.
 
-If a "resume shopping" style modal appears, the command waits up to 30 seconds plus a short grace period, and retries modal confirmation if the button is re-rendered during click.
+Flow:
+- It first checks basket state and looks for the requested item ID inside the same venue basket.
+- If the item is already in that venue basket, it opens checkout and increments from the cart item modal.
+- If the item is not in cart, it falls back to the direct item-page add flow.
+
+When this command falls back to the direct item-page flow, a "resume shopping" style modal is handled automatically (up to 30 seconds plus a short grace period, with retry on re-render during click). The checkout cart-aware increment path does not perform this modal check.
 
 Output uses the same `baskets` shape as `basket`.
 

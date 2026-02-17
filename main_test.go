@@ -315,6 +315,14 @@ func TestBuildCheckoutURL(t *testing.T) {
 	}
 }
 
+func TestBuildCheckoutCartItemSelector(t *testing.T) {
+	got := buildCheckoutCartItemSelector(`item-"abc"\value`)
+	want := `div[data-test-id="CartItem"][data-value="item-\"abc\"\\value"]`
+	if got != want {
+		t.Fatalf("unexpected checkout cart item selector: got %q want %q", got, want)
+	}
+}
+
 func TestIsBasketPageRequest(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -393,6 +401,40 @@ func TestBasketRestoreModalWaitTimeout(t *testing.T) {
 	}
 }
 
+func TestBasketCheckoutCartItemWaitTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   time.Duration
+		wantOut time.Duration
+	}{
+		{
+			name:    "uses max wait for zero timeout",
+			input:   0,
+			wantOut: 10 * time.Second,
+		},
+		{
+			name:    "uses provided timeout when shorter",
+			input:   3 * time.Second,
+			wantOut: 3 * time.Second,
+		},
+		{
+			name:    "caps long timeout",
+			input:   90 * time.Second,
+			wantOut: 10 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := basketCheckoutCartItemWaitTimeout(tc.input)
+			if got != tc.wantOut {
+				t.Fatalf("unexpected checkout cart item timeout clamp: got %v want %v", got, tc.wantOut)
+			}
+		})
+	}
+}
+
 func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	data, err := os.ReadFile("payloads/wolt-baskets-payload.json")
 	if err != nil {
@@ -455,6 +497,72 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	}
 	if unavailableItem.ImageURL != "" {
 		t.Fatalf("expected empty image_url for unavailable fixture item, got %q", unavailableItem.ImageURL)
+	}
+}
+
+func TestBasketContainsVenueItem(t *testing.T) {
+	baskets := []BasketOutput{
+		{
+			VenueSlug: "wolt-market-grizinkalna",
+			Items: []BasketItemOutput{
+				{ID: "item-a"},
+				{ID: "item-b"},
+			},
+		},
+		{
+			VenueSlug: "wolt-market-agenskalna",
+			Items: []BasketItemOutput{
+				{ID: "item-a"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		venueSlug string
+		itemID    string
+		want      bool
+	}{
+		{
+			name:      "matches same venue and item",
+			venueSlug: "wolt-market-grizinkalna",
+			itemID:    "item-a",
+			want:      true,
+		},
+		{
+			name:      "does not match different venue",
+			venueSlug: "wolt-market-grizinkalna",
+			itemID:    "missing-item",
+			want:      false,
+		},
+		{
+			name:      "does not match item in other venue only",
+			venueSlug: "wolt-market-agenskalna",
+			itemID:    "item-b",
+			want:      false,
+		},
+		{
+			name:      "matches case insensitive and trimmed",
+			venueSlug: "  WOLT-MARKET-GRIZINKALNA ",
+			itemID:    " ITEM-B ",
+			want:      true,
+		},
+		{
+			name:      "returns false on empty inputs",
+			venueSlug: "",
+			itemID:    "item-a",
+			want:      false,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := basketContainsVenueItem(baskets, tc.venueSlug, tc.itemID)
+			if got != tc.want {
+				t.Fatalf("unexpected match result: got %v want %v", got, tc.want)
+			}
+		})
 	}
 }
 

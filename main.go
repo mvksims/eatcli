@@ -777,37 +777,63 @@ func runBasket(cfg Config) error {
 }
 
 func runBasketAdd(cfg Config, venueSlug, itemID string) error {
-	return runBasketItemAction(
+	basketAddDebugf("before: start add flow (venue_slug=%s item_id=%s)", venueSlug, itemID)
+	basketAddDebugf("before: pre-check basket contents for venue/item")
+	itemAlreadyInVenueBasket, err := isBasketItemPresentForVenue(cfg, venueSlug, itemID)
+	if err != nil {
+		basketAddDebugf("after: basket pre-check failed: %v", err)
+		return err
+	}
+	basketAddDebugf("after: basket pre-check completed (present=%t)", itemAlreadyInVenueBasket)
+
+	if itemAlreadyInVenueBasket {
+		basketAddDebugf("before: route to checkout increment flow")
+		if err := runBasketAddFromCheckout(cfg, venueSlug, itemID); err != nil {
+			basketAddDebugf("after: checkout increment flow failed: %v", err)
+			return err
+		}
+		basketAddDebugf("after: checkout increment flow completed")
+		return nil
+	}
+
+	basketAddDebugf("before: route to direct item-page add flow")
+	if err := runBasketItemAction(
 		cfg,
 		venueSlug,
 		itemID,
 		`[data-test-id="product-modal.total-price"]`,
 		"add",
-	)
+	); err != nil {
+		basketAddDebugf("after: direct item-page add flow failed: %v", err)
+		return err
+	}
+	basketAddDebugf("after: direct item-page add flow completed")
+	return nil
 }
 
-func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionName string) error {
-	targetURL := buildBasketAddURL(venueSlug, itemID)
-	fmt.Printf("Opening basket %s page: %s\n", actionName, targetURL)
+func isBasketItemPresentForVenue(cfg Config, venueSlug, itemID string) (bool, error) {
+	if _, err := os.Stat(cfg.UserDataDir); os.IsNotExist(err) {
+		return false, fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", cfg.UserDataDir)
+	}
 
+	basketAddDebugf("before: start playwright for basket pre-check")
 	pw, err := playwright.Run()
 	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
+		return false, fmt.Errorf("could not start playwright: %w", err)
 	}
 	defer pw.Stop()
+	basketAddDebugf("after: playwright started for basket pre-check")
 
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-
+	basketAddDebugf("before: launch persistent browser context for basket pre-check")
 	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for basket actions
+		Headless:  playwright.Bool(cfg.Headless),
 		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return false, fmt.Errorf("could not launch persistent context: %w", err)
 	}
 	defer ctx.Close()
+	basketAddDebugf("after: persistent browser context launched for basket pre-check")
 
 	script := `
 		Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -823,68 +849,440 @@ func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionNa
 				: originalQuery(parameters)
 		);
 	`
+	basketAddDebugf("before: add init script for basket pre-check")
+	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
+		return false, fmt.Errorf("could not add init script: %w", err)
+	}
+	basketAddDebugf("after: init script added for basket pre-check")
+
+	basketAddDebugf("before: create new page for basket pre-check")
+	page, err := ctx.NewPage()
+	if err != nil {
+		return false, fmt.Errorf("could not create new page: %w", err)
+	}
+	basketAddDebugf("after: new page created for basket pre-check")
+
+	basketAddDebugf("before: set viewport for basket pre-check")
+	if err := page.SetViewportSize(1440, 810); err != nil {
+		return false, fmt.Errorf("could not set viewport size: %w", err)
+	}
+	basketAddDebugf("after: viewport set for basket pre-check")
+
+	basketAddDebugf("before: set up header removal for basket pre-check")
+	if err := setupHeaderRemoval(page); err != nil {
+		return false, fmt.Errorf("could not set up header removal: %w", err)
+	}
+	basketAddDebugf("after: header removal set for basket pre-check")
+
+	basketAddDebugf("before: attach basket API response capture for basket pre-check")
+	resChan := attachBasketResponseCapture(page)
+	basketAddDebugf("after: basket API response capture attached for basket pre-check")
+
+	targetURL := defaultBasketCaptureURL
+	if cfg.SuccessURLPattern != "" {
+		targetURL = cfg.SuccessURLPattern
+	}
+	basketAddDebugf("before: navigate for basket pre-check (url=%s)", targetURL)
+	requestStartedAt := time.Now()
+	if _, err := page.Goto(targetURL); err != nil {
+		return false, fmt.Errorf("could not go to basket pre-check page: %w", err)
+	}
+	basketAddDebugf("after: navigation completed for basket pre-check")
+
+	basketAddDebugf("before: wait for load state in basket pre-check")
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return false, fmt.Errorf("basket pre-check page did not fully load: %w", err)
+	}
+	basketAddDebugf("after: load state reached in basket pre-check")
+
+	basketAddDebugf("before: wait for baskets API response in basket pre-check")
+	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, requestStartedAt)
+	if err != nil {
+		return false, err
+	}
+	basketAddDebugf("after: baskets API response received in basket pre-check (status=%d)", basketRes.Status)
+
+	baskets := extractBasketOutputs(basketRes.JSON)
+	present := basketContainsVenueItem(baskets, venueSlug, itemID)
+	basketAddDebugf("after: basket contents inspected (venue_slug=%s item_id=%s present=%t)", venueSlug, itemID, present)
+	return present, nil
+}
+
+func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
+	targetURL := buildCheckoutURL(venueSlug)
+	basketAddDebugf("before: prepare checkout increment URL")
+	fmt.Printf("Opening checkout page for basket add: %s\n", targetURL)
+	basketAddDebugf("after: checkout increment URL ready")
+
+	basketAddDebugf("before: start playwright for checkout increment flow")
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("could not start playwright: %w", err)
+	}
+	defer pw.Stop()
+	basketAddDebugf("after: playwright started for checkout increment flow")
+
+	basketAddDebugf("before: ensure user data dir exists (%s)", cfg.UserDataDir)
+	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+		return fmt.Errorf("could not create user data directory: %w", err)
+	}
+	basketAddDebugf("after: user data dir ready")
+
+	basketAddDebugf("before: launch persistent browser context")
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(false), // Always interactive for basket actions
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	})
+	if err != nil {
+		return fmt.Errorf("could not launch persistent context: %w", err)
+	}
+	defer ctx.Close()
+	basketAddDebugf("after: persistent browser context launched")
+
+	script := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => false });
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			],
+		});
+		const originalQuery = navigator.permissions.query;
+		navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications'
+				? Promise.resolve({ state: 'prompt' })
+				: originalQuery(parameters)
+		);
+	`
+	basketAddDebugf("before: add anti-detection init script")
 	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
 		return fmt.Errorf("could not add init script: %w", err)
 	}
+	basketAddDebugf("after: anti-detection init script added")
 
+	basketAddDebugf("before: create new page")
 	page, err := ctx.NewPage()
 	if err != nil {
 		return fmt.Errorf("could not create new page: %w", err)
 	}
+	basketAddDebugf("after: new page created")
 
+	basketAddDebugf("before: set viewport")
 	if err := page.SetViewportSize(1440, 810); err != nil {
 		return fmt.Errorf("could not set viewport size: %w", err)
 	}
+	basketAddDebugf("after: viewport set to 1440x810")
 
+	basketAddDebugf("before: set up header removal")
 	if err := setupHeaderRemoval(page); err != nil {
 		return fmt.Errorf("could not set up header removal: %w", err)
 	}
+	basketAddDebugf("after: header removal is set up")
 
+	basketAddDebugf("before: attach basket API response capture")
 	resChan := attachBasketResponseCapture(page)
+	basketAddDebugf("after: basket API response capture attached")
 
+	basketAddDebugf("before: navigate to checkout page")
+	if _, err := page.Goto(targetURL); err != nil {
+		return fmt.Errorf("could not go to checkout URL: %w", err)
+	}
+	basketAddDebugf("after: checkout page navigation completed")
+
+	basketAddDebugf("before: wait for checkout page load state")
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("checkout page did not fully load: %w", err)
+	}
+	basketAddDebugf("after: checkout page fully loaded")
+
+	cartItemSelector := buildCheckoutCartItemSelector(itemID)
+	basketAddDebugf("before: check if cart item exists using selector %s", cartItemSelector)
+	hasCartItem, err := waitForCheckoutCartItem(page, cartItemSelector, basketCheckoutCartItemWaitTimeout(cfg.Timeout))
+	if err != nil {
+		return err
+	}
+	basketAddDebugf("after: cart item existence check completed (exists=%t)", hasCartItem)
+	if !hasCartItem {
+		return fmt.Errorf("item '%s' was found in basket pre-check but not found on checkout page", itemID)
+	}
+	fmt.Printf("Item %s is in basket. Using checkout flow for increment.\n", itemID)
+
+	cartItemButton := page.Locator(cartItemSelector).Nth(0).Locator("button").Nth(0)
+	basketAddDebugf("before: wait for cart item button")
+	if err := cartItemButton.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find cart item button for '%s': %w", itemID, err)
+	}
+	basketAddDebugf("after: cart item button is visible")
+
+	basketAddDebugf("before: click cart item button")
+	if err := cartItemButton.Click(); err != nil {
+		return fmt.Errorf("could not click cart item button for '%s': %w", itemID, err)
+	}
+	basketAddDebugf("after: cart item button clicked")
+
+	addButtonSelector := `[data-test-id="product-modal.total-price"]`
+	addButton := page.Locator(addButtonSelector).Nth(0)
+	basketAddDebugf("before: wait for add button in modal")
+	if err := addButton.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find basket add button '%s' after cart item selection: %w", addButtonSelector, err)
+	}
+	basketAddDebugf("after: add button in modal is visible")
+
+	incrementButtonSelector := `[data-test-id="product-modal.quantity.increment"]`
+	incrementButton := page.Locator(incrementButtonSelector).Nth(0)
+	basketAddDebugf("before: wait for quantity increment button in modal")
+	if err := incrementButton.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find quantity increment button '%s' in modal: %w", incrementButtonSelector, err)
+	}
+	basketAddDebugf("after: quantity increment button in modal is visible")
+
+	basketAddDebugf("before: click quantity increment button in modal")
+	if err := incrementButton.Click(); err != nil {
+		return fmt.Errorf("could not click quantity increment button '%s' in modal: %w", incrementButtonSelector, err)
+	}
+	basketAddDebugf("after: quantity increment button in modal clicked")
+
+	basketAddDebugf("before: click add button in modal")
+	clickStartedAt := time.Now()
+	if err := addButton.Click(); err != nil {
+		return fmt.Errorf("could not click basket add button '%s': %w", addButtonSelector, err)
+	}
+	basketAddDebugf("after: add button in modal clicked")
+
+	basketAddDebugf("before: wait for baskets API response after add click")
+	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
+	if err != nil {
+		return err
+	}
+	basketAddDebugf("after: baskets API response received (status=%d)", basketRes.Status)
+
+	basketAddDebugf("before: print basket add result JSON")
+	printBasketActionResult("add", venueSlug, itemID, basketRes)
+	basketAddDebugf("after: basket add result JSON printed")
+	return nil
+}
+
+func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionName string) error {
+	targetURL := buildBasketAddURL(venueSlug, itemID)
+	fmt.Printf("Opening basket %s page: %s\n", actionName, targetURL)
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: start direct item-page add flow URL setup complete")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: start playwright for direct item-page add")
+	}
+	pw, err := playwright.Run()
+	if err != nil {
+		return fmt.Errorf("could not start playwright: %w", err)
+	}
+	defer pw.Stop()
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: playwright started for direct item-page add")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: ensure user data dir exists (%s)", cfg.UserDataDir)
+	}
+	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+		return fmt.Errorf("could not create user data directory: %w", err)
+	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: user data dir ready")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: launch persistent browser context")
+	}
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(false), // Always interactive for basket actions
+		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	})
+	if err != nil {
+		return fmt.Errorf("could not launch persistent context: %w", err)
+	}
+	defer ctx.Close()
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: persistent browser context launched")
+	}
+
+	script := `
+		Object.defineProperty(navigator, 'webdriver', { get: () => false });
+		Object.defineProperty(navigator, 'plugins', {
+			get: () => [
+				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+			],
+		});
+		const originalQuery = navigator.permissions.query;
+		navigator.permissions.query = (parameters) => (
+			parameters.name === 'notifications'
+				? Promise.resolve({ state: 'prompt' })
+				: originalQuery(parameters)
+		);
+	`
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: add anti-detection init script")
+	}
+	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
+		return fmt.Errorf("could not add init script: %w", err)
+	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: anti-detection init script added")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: create new page")
+	}
+	page, err := ctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("could not create new page: %w", err)
+	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: new page created")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: set viewport")
+	}
+	if err := page.SetViewportSize(1440, 810); err != nil {
+		return fmt.Errorf("could not set viewport size: %w", err)
+	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: viewport set to 1440x810")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: set up header removal")
+	}
+	if err := setupHeaderRemoval(page); err != nil {
+		return fmt.Errorf("could not set up header removal: %w", err)
+	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: header removal is set up")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: attach basket API response capture")
+	}
+	resChan := attachBasketResponseCapture(page)
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: basket API response capture attached")
+	}
+
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: navigate to item page")
+	}
 	if _, err := page.Goto(targetURL); err != nil {
 		return fmt.Errorf("could not go to basket %s URL: %w", actionName, err)
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: item page navigation completed")
+	}
 
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: wait for item page load state")
+	}
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 		State:   playwright.LoadStateLoad,
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("basket %s page did not fully load: %w", actionName, err)
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: item page fully loaded")
+	}
 
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: check restore order modal")
+	}
 	restoreClicked, err := maybeConfirmRestoreOrderModal(page, cfg.Timeout)
 	if err != nil {
 		return err
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: restore order modal check completed (clicked=%t)", restoreClicked)
+	}
 	if restoreClicked {
 		// Let UI settle after closing modal; ignore timeout and continue with main flow.
+		if strings.EqualFold(actionName, "add") {
+			basketAddDebugf("before: wait for network idle after restore modal confirmation")
+		}
 		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
 			State:   playwright.LoadStateNetworkidle,
 			Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 		}); err != nil {
 			log.Printf("Warning: could not reach network idle after restore order modal confirmation: %v", err)
 		}
+		if strings.EqualFold(actionName, "add") {
+			basketAddDebugf("after: post-restore network-idle wait finished")
+		}
 	}
 
 	button := page.Locator(buttonSelector).Nth(0)
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: wait for add button (%s)", buttonSelector)
+	}
 	if err := button.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("could not find basket %s button '%s': %w", actionName, buttonSelector, err)
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: add button is visible")
+	}
 
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: click add button")
+	}
 	clickStartedAt := time.Now()
 	if err := button.Click(); err != nil {
 		return fmt.Errorf("could not click basket %s button '%s': %w", actionName, buttonSelector, err)
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: add button clicked")
+	}
 
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: wait for baskets API response")
+	}
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
 	if err != nil {
 		return err
 	}
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: baskets API response received (status=%d)", basketRes.Status)
+	}
 
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("before: print basket add result JSON")
+	}
+	printBasketActionResult(actionName, venueSlug, itemID, basketRes)
+	if strings.EqualFold(actionName, "add") {
+		basketAddDebugf("after: basket add result JSON printed")
+	}
+	return nil
+}
+
+func basketAddDebugf(format string, args ...interface{}) {
+	fmt.Printf("[DEBUG][basket add] "+format+"\n", args...)
+}
+
+func printBasketActionResult(actionName, venueSlug, itemID string, basketRes basketResponseData) {
 	baskets := extractBasketOutputs(basketRes.JSON)
 
 	result := map[string]interface{}{
@@ -900,7 +1298,6 @@ func runBasketItemAction(cfg Config, venueSlug, itemID, buttonSelector, actionNa
 	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(resultJSON))
-	return nil
 }
 
 func runCheckout(cfg Config, venueSlug string) error {
@@ -1111,6 +1508,26 @@ func extractBasketOutputs(responseJSON interface{}) []BasketOutput {
 	}
 
 	return outputs
+}
+
+func basketContainsVenueItem(baskets []BasketOutput, venueSlug, itemID string) bool {
+	wantVenue := strings.TrimSpace(strings.ToLower(venueSlug))
+	wantItem := strings.TrimSpace(strings.ToLower(itemID))
+	if wantVenue == "" || wantItem == "" {
+		return false
+	}
+
+	for _, basket := range baskets {
+		if strings.TrimSpace(strings.ToLower(basket.VenueSlug)) != wantVenue {
+			continue
+		}
+		for _, item := range basket.Items {
+			if strings.TrimSpace(strings.ToLower(item.ID)) == wantItem {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func extractBasketTotal(basketMap map[string]interface{}) interface{} {
@@ -1411,6 +1828,43 @@ func minDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func waitForCheckoutCartItem(page playwright.Page, cartItemSelector string, timeout time.Duration) (bool, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	locator := page.Locator(cartItemSelector).Nth(0)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		count, err := locator.Count()
+		if err != nil {
+			return false, fmt.Errorf("could not inspect checkout cart item '%s': %w", cartItemSelector, err)
+		}
+		if count > 0 {
+			return true, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return false, nil
+}
+
+func basketCheckoutCartItemWaitTimeout(timeout time.Duration) time.Duration {
+	const maxWait = 10 * time.Second
+	if timeout <= 0 {
+		return maxWait
+	}
+	if timeout < maxWait {
+		return timeout
+	}
+	return maxWait
+}
+
+func buildCheckoutCartItemSelector(itemID string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(itemID)
+	return fmt.Sprintf(`div[data-test-id="CartItem"][data-value="%s"]`, escaped)
 }
 
 func buildBasketAddURL(venueSlug, itemID string) string {
