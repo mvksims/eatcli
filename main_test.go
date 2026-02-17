@@ -566,6 +566,67 @@ func TestBasketContainsVenueItem(t *testing.T) {
 	}
 }
 
+func TestBasketItemQuantityForVenue(t *testing.T) {
+	baskets := []BasketOutput{
+		{
+			VenueSlug: "wolt-market-grizinkalna",
+			Items: []BasketItemOutput{
+				{ID: "item-a", Count: 2},
+				{ID: "item-a", Count: 1},
+				{ID: "item-b", Count: 4},
+			},
+		},
+		{
+			VenueSlug: "wolt-market-agenskalna",
+			Items: []BasketItemOutput{
+				{ID: "item-a", Count: 7},
+			},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		venueSlug string
+		itemID    string
+		want      int
+	}{
+		{
+			name:      "sums same item in same venue",
+			venueSlug: "wolt-market-grizinkalna",
+			itemID:    "item-a",
+			want:      3,
+		},
+		{
+			name:      "matches case insensitive and trimmed",
+			venueSlug: "  WOLT-MARKET-GRIZINKALNA ",
+			itemID:    " ITEM-B ",
+			want:      4,
+		},
+		{
+			name:      "does not include other venue counts",
+			venueSlug: "wolt-market-grizinkalna",
+			itemID:    "item-c",
+			want:      0,
+		},
+		{
+			name:      "returns zero for empty venue",
+			venueSlug: "",
+			itemID:    "item-a",
+			want:      0,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := basketItemQuantityForVenue(baskets, tc.venueSlug, tc.itemID)
+			if got != tc.want {
+				t.Fatalf("unexpected quantity result: got %d want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIsRetryableRestoreModalClickError(t *testing.T) {
 	tests := []struct {
 		name      string

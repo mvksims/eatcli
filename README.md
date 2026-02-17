@@ -1,6 +1,6 @@
 # Go Playwright Authentication CLI
 
-This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, and `checkout` to attempt order placement and surface checkout errors.
+This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, `basket remove` to remove items from basket, and `checkout` to attempt order placement and surface checkout errors.
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ go run main.go <command> [options] [config.yml] [args...]
 -   `[config.yml]` is an optional path to your configuration file. It defaults to `config.yml` if not provided.
 -   `[query]` (for `search` command) is the search term(s).
 -   `basket` with no additional arguments returns current basket JSON.
--   For `basket add`, arguments are `<venue_slug> <item_id>`.
+-   For `basket add` and `basket remove`, arguments are `<venue_slug> <item_id>`.
 -   For `checkout`, argument is `<venue_slug>`.
 
 ### `auth` Command
@@ -107,15 +107,28 @@ This command increases quantity for a specific item in your basket and prints th
 Flow:
 - It first checks basket state and looks for the requested item ID inside the same venue basket.
 - If the item is already in that venue basket, it opens checkout and increments from the cart item modal.
-- If the item is not in cart, it falls back to the direct item-page add flow.
-
-When this command falls back to the direct item-page flow, a "resume shopping" style modal is handled automatically (up to 30 seconds plus a short grace period, with retry on re-render during click). The checkout cart-aware increment path does not perform this modal check.
+- If the item is not in cart, it opens the item detail page, waits for and confirms `restore-order-modal.confirm`, then clicks `product-modal.submit`, waits for refreshed baskets API response, and prints normalized basket JSON.
 
 Output uses the same `baskets` shape as `basket`.
 
 **Example:**
 ```bash
 go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
+```
+
+### `basket remove` Command
+
+This command removes a specific item from the selected venue basket and prints the resulting basket state as JSON.
+
+Flow:
+- It first checks basket state and confirms the requested item ID exists in the same venue basket.
+- It reads the current item quantity from basket data.
+- It opens checkout, opens the cart item modal, clicks `product-modal.quantity.decrement` the same number of times as the current quantity, then clicks `product-modal.submit`.
+- It waits for updated baskets API response and prints normalized `baskets` output.
+
+**Example:**
+```bash
+go run main.go basket remove wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 ```
 
 ### `checkout` Command

@@ -8,8 +8,9 @@ This application implements a Go-based Command Line Interface (CLI) leveraging P
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
 3.  **`basket` command:** Returns the current basket payload as JSON for the active session.
-4.  **`basket add` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`. If present, it opens checkout and increments quantity through the cart item modal; if absent, it falls back to the direct item page add flow. It captures the baskets API response and prints normalized JSON.
-5.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
+4.  **`basket add` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`. If present, it opens checkout and increments quantity through the cart item modal; if absent, it opens the item detail page, confirms restore-order modal, clicks submit, and captures the refreshed baskets API response to print normalized JSON.
+5.  **`basket remove` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`, remembers its quantity, opens checkout, decrements exactly that many times in the cart item modal, submits, and prints normalized basket JSON.
+6.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
 
 ## Key Technologies and Architecture
 
@@ -45,9 +46,10 @@ During initial development, several challenges were encountered, primarily revol
 -   **Basket View Command:** Added `basket` (without subcommands) to return the current basket JSON.
 -   **Basket Add Command:** `basket add <venue_slug> <item_id>` now waits for page load, clicks `[data-test-id="product-modal.total-price"]`, captures a successful `GET` response for `https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets`, and prints the response JSON.
 -   **Basket Add Cart-Aware Branch:** `basket add` now first checks basket JSON for `item_id` within the requested venue; when present, it opens checkout, locates `div[data-test-id="CartItem"][data-value="<item_id>"]`, opens the item modal from cart, increments quantity, and reads basket JSON.
+-   **Basket Add Direct Item Flow Rewrite:** When the item is not yet in basket, `basket add` now runs a dedicated flow: open item detail URL, wait for/click `[data-test-id="restore-order-modal.confirm"]`, wait for/click `[data-test-id="product-modal.submit"]`, then wait for updated baskets API response and print normalized basket JSON.
+-   **Basket Remove Command:** `basket remove <venue_slug> <item_id>` now checks basket JSON for item presence and quantity in the requested venue, opens checkout, opens the item modal from cart, clicks `[data-test-id="product-modal.quantity.decrement"]` exactly quantity times, clicks `[data-test-id="product-modal.submit"]`, then prints updated basket JSON.
 -   **Basket Output Shape:** Basket commands now normalize output into a `baskets` array where each basket includes `id`, `total`, `venue_slug`, and `items` (`id`, `count`, `total`, `image_url`, `name`, `is_available`, `price`).
--   **Basket Restore Modal Handling:** Basket add fallback (direct item-page path) waits up to 30 seconds plus a grace period for `[data-test-id="restore-order-modal.confirm"]` after initial page load and retries modal click when transient DOM detach/re-render errors occur. Checkout cart-aware increment path does not run this modal step.
--   **Basket Remove Removed:** `basket remove` was removed because the assumptions for reliable decrement automation were not valid.
+-   **Basket Restore Modal Handling:** Basket add direct item flow now explicitly waits for and confirms `[data-test-id="restore-order-modal.confirm"]` before submitting item add. Checkout cart-aware increment path does not run this modal step.
 -   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
 -   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
 
