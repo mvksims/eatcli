@@ -40,6 +40,46 @@ const (
 	basketAPIURL            = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
 )
 
+func resolveUserDataDir(rawPath string) (string, error) {
+	trimmed := strings.TrimSpace(rawPath)
+	if trimmed == "" {
+		return "", fmt.Errorf("user_data_dir must be set and cannot be empty")
+	}
+
+	absPath, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("could not get absolute path for user_data_dir: %w", err)
+	}
+	cleaned := filepath.Clean(absPath)
+	if filepath.Dir(cleaned) == cleaned {
+		return "", fmt.Errorf("user_data_dir cannot be a filesystem root path: %s", cleaned)
+	}
+
+	return cleaned, nil
+}
+
+func validateEraseUserDataDir(path string) error {
+	cleaned := filepath.Clean(path)
+	if strings.TrimSpace(cleaned) == "" {
+		return fmt.Errorf("refusing to erase empty user data directory path")
+	}
+	if filepath.Dir(cleaned) == cleaned {
+		return fmt.Errorf("refusing to erase filesystem root path: %s", cleaned)
+	}
+
+	cwd, err := os.Getwd()
+	if err == nil && filepath.Clean(cwd) == cleaned {
+		return fmt.Errorf("refusing to erase current working directory: %s", cleaned)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err == nil && filepath.Clean(homeDir) == cleaned {
+		return fmt.Errorf("refusing to erase home directory: %s", cleaned)
+	}
+
+	return nil
+}
+
 // loadConfig reads a YAML file from the given path and returns a Config struct.
 func loadConfig(path string) (Config, error) {
 	var cfg Config
@@ -56,11 +96,11 @@ func loadConfig(path string) (Config, error) {
 
 	cfg.SuccessURLPattern = yamlCfg.SuccessURLPattern
 	cfg.SuccessSelector = yamlCfg.SuccessSelector
-	absPath, err := filepath.Abs(yamlCfg.UserDataDir)
+	resolvedUserDataDir, err := resolveUserDataDir(yamlCfg.UserDataDir)
 	if err != nil {
-		return cfg, fmt.Errorf("could not get absolute path for UserDataDir: %w", err)
+		return cfg, err
 	}
-	cfg.UserDataDir = absPath
+	cfg.UserDataDir = resolvedUserDataDir
 	cfg.Headless = yamlCfg.Headless
 	cfg.Timeout = time.Duration(yamlCfg.TimeoutSeconds) * time.Second
 
@@ -222,6 +262,9 @@ func printUsage() {
 
 func runAuth(cfg Config, eraseData bool, authURL string) error {
 	if eraseData {
+		if err := validateEraseUserDataDir(cfg.UserDataDir); err != nil {
+			return err
+		}
 		fmt.Printf("Erasing session data from '%s'...\n", cfg.UserDataDir)
 		if err := os.RemoveAll(cfg.UserDataDir); err != nil {
 			return fmt.Errorf("failed to erase user data directory: %w", err)

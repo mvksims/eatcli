@@ -56,6 +56,49 @@ timeout_seconds: 30
 	}
 }
 
+func TestLoadConfig_EmptyUserDataDir(t *testing.T) {
+	content := `
+success_url_pattern: "https://example.com/dashboard"
+success_selector: "#user-avatar"
+user_data_dir: ""
+headless: true
+timeout_seconds: 30
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yml")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write temp config file: %v", err)
+	}
+
+	_, err := loadConfig(configFile)
+	if err == nil {
+		t.Fatalf("expected loadConfig to fail for empty user_data_dir")
+	}
+	if !strings.Contains(err.Error(), "user_data_dir") {
+		t.Fatalf("expected user_data_dir validation error, got: %v", err)
+	}
+}
+
+func TestValidateEraseUserDataDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	safePath := filepath.Join(tmpDir, "profile", "wolt")
+	if err := validateEraseUserDataDir(safePath); err != nil {
+		t.Fatalf("expected safe path to pass erase validation, got: %v", err)
+	}
+
+	if err := validateEraseUserDataDir(string(filepath.Separator)); err == nil {
+		t.Fatalf("expected filesystem root to fail erase validation")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current working directory: %v", err)
+	}
+	if err := validateEraseUserDataDir(cwd); err == nil {
+		t.Fatalf("expected working directory to fail erase validation")
+	}
+}
+
 func TestRunAutomation_Success(t *testing.T) {
 	// We need to install playwright browsers for the test
 	if err := playwright.Install(&playwright.RunOptions{}); err != nil {
