@@ -126,6 +126,7 @@ This command removes a specific item from the selected venue basket and prints t
 Flow:
 - It first checks basket state and confirms the requested item ID exists in the same venue basket.
 - It reads the current item quantity from basket data.
+- After checkout loads, it checks if `SendOrderButton` is visible; if not, it optionally confirms `restore-order-modal.confirm`, clicks `cart-view-button` when shown, then clicks `CartViewNextStepButton`, and waits for checkout readiness.
 - It opens checkout, opens the cart item modal, clicks `product-modal.quantity.decrement` the same number of times as the current quantity, then clicks `product-modal.submit`.
 - It waits for updated baskets API response and prints normalized `baskets` output.
 

@@ -1029,6 +1029,12 @@ func runBasketRemoveFromCheckout(cfg Config, venueSlug, itemID string, quantity 
 	}
 	basketRemoveDebugf("after: checkout page fully loaded")
 
+	basketRemoveDebugf("before: ensure checkout is ready for basket remove flow")
+	if err := ensureCheckoutReadyForBasketRemove(page, cfg.Timeout); err != nil {
+		return err
+	}
+	basketRemoveDebugf("after: checkout is ready for basket remove flow")
+
 	cartItemSelector := buildCheckoutCartItemSelector(itemID)
 	basketRemoveDebugf("before: check if cart item exists using selector %s", cartItemSelector)
 	hasCartItem, err := waitForCheckoutCartItem(page, cartItemSelector, basketCheckoutCartItemWaitTimeout(cfg.Timeout))
@@ -1695,6 +1701,133 @@ func waitForCheckoutCartItem(page playwright.Page, cartItemSelector string, time
 	}
 
 	return false, nil
+}
+
+func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Duration) error {
+	waitTimeout := basketCheckoutCartItemWaitTimeout(timeout)
+	sendOrderButtonSelector := `[data-test-id="SendOrderButton"]`
+
+	sendOrderVisible, err := isLocatorVisible(page, sendOrderButtonSelector, waitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not inspect checkout readiness via send-order button '%s': %w", sendOrderButtonSelector, err)
+	}
+	if sendOrderVisible {
+		basketRemoveDebugf("after: checkout send-order button is visible")
+		return nil
+	}
+
+	basketRemoveDebugf("after: checkout send-order button is not visible; attempting redirect recovery")
+	clickedRestore, err := maybeConfirmRestoreOrderModal(page, waitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not handle optional restore-order modal before checkout recovery: %w", err)
+	}
+	if clickedRestore {
+		basketRemoveDebugf("after: optional restore-order modal confirmed before checkout recovery")
+	} else {
+		basketRemoveDebugf("after: optional restore-order modal not shown before checkout recovery")
+	}
+
+	cartViewButtonSelector := `[data-test-id="cart-view-button"]`
+	cartViewVisible, err := isLocatorVisible(page, cartViewButtonSelector, waitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not inspect cart view button '%s' before checkout recovery: %w", cartViewButtonSelector, err)
+	}
+	if cartViewVisible {
+		basketRemoveDebugf("before: click cart view button (%s)", cartViewButtonSelector)
+		clickedCartView := false
+		for attempt := 1; attempt <= 3; attempt++ {
+			cartViewButton := page.Locator(cartViewButtonSelector).Nth(0)
+			if err := cartViewButton.Click(playwright.LocatorClickOptions{
+				Timeout: playwright.Float(3000),
+			}); err != nil {
+				if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
+					basketRemoveDebugf("after: cart view button click retry needed (attempt %d): %v", attempt, err)
+					time.Sleep(150 * time.Millisecond)
+					continue
+				}
+				return fmt.Errorf("could not click cart view button '%s': %w", cartViewButtonSelector, err)
+			}
+			clickedCartView = true
+			break
+		}
+		if !clickedCartView {
+			return fmt.Errorf("could not click cart view button '%s' after retries", cartViewButtonSelector)
+		}
+		basketRemoveDebugf("after: cart view button clicked")
+	} else {
+		basketRemoveDebugf("after: cart view button not shown; continuing to checkout next-step button")
+	}
+
+	nextStepSelector := `[data-test-id="CartViewNextStepButton"]`
+	nextStepButton := page.Locator(nextStepSelector).Nth(0)
+	basketRemoveDebugf("before: wait for checkout next-step button (%s)", nextStepSelector)
+	if err := nextStepButton.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("could not find checkout next-step button '%s': %w", nextStepSelector, err)
+	}
+	basketRemoveDebugf("after: checkout next-step button is visible")
+
+	basketRemoveDebugf("before: click checkout next-step button")
+	clickedNextStep := false
+	for attempt := 1; attempt <= 3; attempt++ {
+		nextStepButton = page.Locator(nextStepSelector).Nth(0)
+		if err := nextStepButton.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(3000),
+		}); err != nil {
+			if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
+				basketRemoveDebugf("after: checkout next-step click retry needed (attempt %d): %v", attempt, err)
+				time.Sleep(150 * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("could not click checkout next-step button '%s': %w", nextStepSelector, err)
+		}
+		clickedNextStep = true
+		break
+	}
+	if !clickedNextStep {
+		return fmt.Errorf("could not click checkout next-step button '%s' after retries", nextStepSelector)
+	}
+	basketRemoveDebugf("after: checkout next-step button clicked")
+
+	basketRemoveDebugf("before: wait for checkout load state after next-step click")
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateLoad,
+		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
+	}); err != nil {
+		return fmt.Errorf("checkout page did not fully load after clicking '%s': %w", nextStepSelector, err)
+	}
+	basketRemoveDebugf("after: checkout load state reached after next-step click")
+
+	sendOrderVisible, err = isLocatorVisible(page, sendOrderButtonSelector, waitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not confirm checkout readiness after recovery via send-order button '%s': %w", sendOrderButtonSelector, err)
+	}
+	if !sendOrderVisible {
+		return fmt.Errorf("checkout is not ready for removal: send-order button '%s' is not visible after recovery", sendOrderButtonSelector)
+	}
+	basketRemoveDebugf("after: checkout send-order button is visible after recovery")
+	return nil
+}
+
+func isLocatorVisible(page playwright.Page, selector string, timeout time.Duration) (bool, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	locator := page.Locator(selector).Nth(0)
+	if err := locator.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(timeout.Milliseconds())),
+	}); err != nil {
+		if isPlaywrightTimeoutError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("could not inspect locator '%s': %w", selector, err)
+	}
+
+	return true, nil
 }
 
 func basketCheckoutCartItemWaitTimeout(timeout time.Duration) time.Duration {
