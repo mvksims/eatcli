@@ -2,5 +2,6 @@ start_url: "https://wolt.com/en/discovery"
 success_url_pattern: "https://wolt.com/en/discovery"
 success_selector: "[data-test-id='UserStatus.ProfileImage']"
 user_data_dir: "./profile/wolt"
+venue_base_url: "https://wolt.com/en/lva/riga"
 headless: false
 timeout_seconds: 600

@@ -45,11 +45,38 @@ timeout_seconds: 30
 	if filepath.Base(cfg.UserDataDir) != "test_profile" {
 		t.Errorf("expected UserDataDir to end with 'test_profile', got '%s'", cfg.UserDataDir)
 	}
+	if cfg.VenueBaseURL != defaultVenueBaseURL {
+		t.Errorf("expected VenueBaseURL default to be %q, got %q", defaultVenueBaseURL, cfg.VenueBaseURL)
+	}
 	if !cfg.Headless {
 		t.Errorf("expected Headless to be true, got false")
 	}
 	if cfg.Timeout != 30*time.Second {
 		t.Errorf("expected Timeout to be 30s, got %v", cfg.Timeout)
+	}
+}
+
+func TestLoadConfig_CustomVenueBaseURL(t *testing.T) {
+	content := `
+success_url_pattern: "https://example.com/dashboard"
+success_selector: "#user-avatar"
+user_data_dir: "./test_profile"
+venue_base_url: "https://example.com/en/usa/new-york/"
+headless: true
+timeout_seconds: 30
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yml")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write temp config file: %v", err)
+	}
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	if cfg.VenueBaseURL != "https://example.com/en/usa/new-york" {
+		t.Fatalf("unexpected VenueBaseURL: %q", cfg.VenueBaseURL)
 	}
 }
 
@@ -93,6 +120,31 @@ func TestValidateEraseUserDataDir(t *testing.T) {
 	}
 	if err := validateEraseUserDataDir(cwd); err == nil {
 		t.Fatalf("expected working directory to fail erase validation")
+	}
+}
+
+func TestResolveVenueBaseURL(t *testing.T) {
+	got, err := resolveVenueBaseURL("")
+	if err != nil {
+		t.Fatalf("expected default venue base URL, got error: %v", err)
+	}
+	if got != defaultVenueBaseURL {
+		t.Fatalf("unexpected default venue base URL: %q", got)
+	}
+
+	got, err = resolveVenueBaseURL("https://example.com/en/usa/new-york/")
+	if err != nil {
+		t.Fatalf("expected valid custom venue base URL, got error: %v", err)
+	}
+	if got != "https://example.com/en/usa/new-york" {
+		t.Fatalf("unexpected custom venue base URL: %q", got)
+	}
+
+	if _, err := resolveVenueBaseURL("example.com/en/usa/new-york"); err == nil {
+		t.Fatalf("expected missing scheme/host to fail venue base URL validation")
+	}
+	if _, err := resolveVenueBaseURL("https://example.com/en/usa/new-york?x=1"); err == nil {
+		t.Fatalf("expected query parameters to fail venue base URL validation")
 	}
 }
 
@@ -284,7 +336,8 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 }
 
 func TestBuildBasketAddURL(t *testing.T) {
-	got := buildBasketAddURL("market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
+	cfg := Config{VenueBaseURL: "https://example.com/en/lva/riga"}
+	got := buildBasketAddURL(cfg, "market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("buildBasketAddURL returned invalid URL %q: %v", got, err)
@@ -302,7 +355,8 @@ func TestBuildBasketAddURL(t *testing.T) {
 }
 
 func TestBuildCheckoutURL(t *testing.T) {
-	got := buildCheckoutURL("market-grizinkalna")
+	cfg := Config{VenueBaseURL: "https://example.com/en/lva/riga"}
+	got := buildCheckoutURL(cfg, "market-grizinkalna")
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("buildCheckoutURL returned invalid URL %q: %v", got, err)

@@ -55,6 +55,7 @@ During initial development, several challenges were encountered, primarily revol
 -   **User Data Dir Safety Validation:** Config loading now rejects empty/root `user_data_dir`, and `auth --erase-data` refuses destructive targets such as filesystem root, home directory, and current working directory.
 -   **Stale Automation Path Cleanup:** Removed unused internal automation-only code paths and related tests (`runAutomation`, `waitAuthorized*`, and `runBasketItemAction`) to keep command behavior aligned with supported CLI surface.
 -   **Shared Browser Bootstrap Helper:** Added a common Playwright session launcher that centralizes persistent context startup, anti-detection init script, viewport setup, and request header routing across auth/search/basket/checkout flows.
+-   **Configurable Geography Base:** Added optional `venue_base_url` configuration used by venue-scoped URL builders for `basket add`, `basket remove`, and `checkout` flows. Defaults to `https://wolt.com/en/lva/riga` when not configured.
 
 ## Usage Notes for Agent
 

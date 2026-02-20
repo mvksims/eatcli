@@ -27,9 +27,12 @@ Example `config.yml`:
 success_url_pattern: "https://wolt.com/en/discovery"
 success_selector: "[data-test-id='UserStatus.ProfileImage']"
 user_data_dir: "./profile/wolt"
+venue_base_url: "https://wolt.com/en/lva/riga"
 headless: false
 timeout_seconds: 600
 ```
+
+`venue_base_url` controls geography-specific venue URL generation used by `basket add`, `basket remove`, and `checkout`. If omitted, it defaults to `https://wolt.com/en/lva/riga`.
 
 ## Usage
 

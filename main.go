@@ -21,6 +21,7 @@ type Config struct {
 	SuccessURLPattern string
 	SuccessSelector   string
 	UserDataDir       string
+	VenueBaseURL      string
 	Headless          bool
 	Timeout           time.Duration
 }
@@ -30,12 +31,14 @@ type YamlConfig struct {
 	SuccessURLPattern string `yaml:"success_url_pattern"`
 	SuccessSelector   string `yaml:"success_selector"`
 	UserDataDir       string `yaml:"user_data_dir"`
+	VenueBaseURL      string `yaml:"venue_base_url"`
 	Headless          bool   `yaml:"headless"`
 	TimeoutSeconds    int    `yaml:"timeout_seconds"`
 }
 
 const (
 	defaultBasketCaptureURL = "https://wolt.com/en/discovery"
+	defaultVenueBaseURL     = "https://wolt.com/en/lva/riga"
 	basketAPIURL            = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
 	defaultViewportWidth    = 1440
 	defaultViewportHeight   = 810
@@ -150,6 +153,27 @@ func resolveUserDataDir(rawPath string) (string, error) {
 	return cleaned, nil
 }
 
+func resolveVenueBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultVenueBaseURL, nil
+	}
+
+	cleaned := strings.TrimRight(trimmed, "/")
+	parsed, err := url.Parse(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("invalid venue_base_url: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("venue_base_url must include scheme and host")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("venue_base_url cannot include query parameters or fragments")
+	}
+
+	return cleaned, nil
+}
+
 func validateEraseUserDataDir(path string) error {
 	cleaned := filepath.Clean(path)
 	if strings.TrimSpace(cleaned) == "" {
@@ -193,6 +217,11 @@ func loadConfig(path string) (Config, error) {
 		return cfg, err
 	}
 	cfg.UserDataDir = resolvedUserDataDir
+	resolvedVenueBaseURL, err := resolveVenueBaseURL(yamlCfg.VenueBaseURL)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.VenueBaseURL = resolvedVenueBaseURL
 	cfg.Headless = yamlCfg.Headless
 	cfg.Timeout = time.Duration(yamlCfg.TimeoutSeconds) * time.Second
 
@@ -668,7 +697,7 @@ func runBasketAdd(cfg Config, venueSlug, itemID string) error {
 }
 
 func runBasketAddFromProductDetail(cfg Config, venueSlug, itemID string) error {
-	targetURL := buildBasketAddURL(venueSlug, itemID)
+	targetURL := buildBasketAddURL(cfg, venueSlug, itemID)
 	basketAddDebugf("before: prepare product detail URL")
 	fmt.Printf("Opening basket add page: %s\n", targetURL)
 	basketAddDebugf("after: product detail URL ready")
@@ -872,7 +901,7 @@ func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string, debugf 
 }
 
 func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
-	targetURL := buildCheckoutURL(venueSlug)
+	targetURL := buildCheckoutURL(cfg, venueSlug)
 	basketAddDebugf("before: prepare checkout increment URL")
 	fmt.Printf("Opening checkout page for basket add: %s\n", targetURL)
 	basketAddDebugf("after: checkout increment URL ready")
@@ -985,7 +1014,7 @@ func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
 }
 
 func runBasketRemoveFromCheckout(cfg Config, venueSlug, itemID string, quantity int) error {
-	targetURL := buildCheckoutURL(venueSlug)
+	targetURL := buildCheckoutURL(cfg, venueSlug)
 	basketRemoveDebugf("before: prepare checkout remove URL")
 	fmt.Printf("Opening checkout page for basket remove: %s\n", targetURL)
 	basketRemoveDebugf("after: checkout remove URL ready")
@@ -1142,7 +1171,7 @@ func printBasketActionResult(actionName, venueSlug, itemID string, basketRes bas
 }
 
 func runCheckout(cfg Config, venueSlug string) error {
-	targetURL := buildCheckoutURL(venueSlug)
+	targetURL := buildCheckoutURL(cfg, venueSlug)
 	fmt.Printf("Opening checkout page: %s\n", targetURL)
 
 	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
@@ -1709,17 +1738,19 @@ func buildCheckoutCartItemSelector(itemID string) string {
 	return fmt.Sprintf(`div[data-test-id="CartItem"][data-value="%s"]`, escaped)
 }
 
-func buildBasketAddURL(venueSlug, itemID string) string {
+func buildBasketAddURL(cfg Config, venueSlug, itemID string) string {
 	return fmt.Sprintf(
-		"https://wolt.com/en/lva/riga/venue/%s/itemid-%s",
+		"%s/venue/%s/itemid-%s",
+		cfg.VenueBaseURL,
 		url.PathEscape(venueSlug),
 		url.PathEscape(itemID),
 	)
 }
 
-func buildCheckoutURL(venueSlug string) string {
+func buildCheckoutURL(cfg Config, venueSlug string) string {
 	return fmt.Sprintf(
-		"https://wolt.com/en/lva/riga/venue/%s/checkout",
+		"%s/venue/%s/checkout",
+		cfg.VenueBaseURL,
 		url.PathEscape(venueSlug),
 	)
 }
