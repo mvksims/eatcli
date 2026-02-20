@@ -37,7 +37,100 @@ type YamlConfig struct {
 const (
 	defaultBasketCaptureURL = "https://wolt.com/en/discovery"
 	basketAPIURL            = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
+	defaultViewportWidth    = 1440
+	defaultViewportHeight   = 810
+	firefoxUserAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"
 )
+
+const antiDetectionInitScript = `
+	Object.defineProperty(navigator, 'webdriver', { get: () => false });
+	Object.defineProperty(navigator, 'plugins', {
+		get: () => [
+			{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+		],
+	});
+	const originalQuery = navigator.permissions.query;
+	navigator.permissions.query = (parameters) => (
+		parameters.name === 'notifications'
+			? Promise.resolve({ state: 'prompt' })
+			: originalQuery(parameters)
+	);
+`
+
+type browserSessionOptions struct {
+	headless               bool
+	requireExistingProfile bool
+	ensureProfileDir       bool
+}
+
+func ensureUserDataDirExists(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", path)
+		}
+		return fmt.Errorf("could not inspect user data directory '%s': %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("user data directory '%s' exists but is not a directory", path)
+	}
+	return nil
+}
+
+func launchPersistentSession(cfg Config, opts browserSessionOptions) (*playwright.Playwright, playwright.BrowserContext, playwright.Page, error) {
+	if opts.requireExistingProfile {
+		if err := ensureUserDataDirExists(cfg.UserDataDir); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	if opts.ensureProfileDir {
+		if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
+			return nil, nil, nil, fmt.Errorf("could not create user data directory: %w", err)
+		}
+	}
+
+	pw, err := playwright.Run()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("could not start playwright: %w", err)
+	}
+
+	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless:  playwright.Bool(opts.headless),
+		UserAgent: playwright.String(firefoxUserAgent),
+	})
+	if err != nil {
+		_ = pw.Stop()
+		return nil, nil, nil, fmt.Errorf("could not launch persistent context: %w", err)
+	}
+
+	cleanup := func() {
+		_ = ctx.Close()
+		_ = pw.Stop()
+	}
+
+	if err := ctx.AddInitScript(playwright.Script{Content: playwright.String(antiDetectionInitScript)}); err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("could not add init script: %w", err)
+	}
+
+	page, err := ctx.NewPage()
+	if err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("could not create new page: %w", err)
+	}
+
+	if err := page.SetViewportSize(defaultViewportWidth, defaultViewportHeight); err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("could not set viewport size: %w", err)
+	}
+
+	if err := setupHeaderRemoval(page); err != nil {
+		cleanup()
+		return nil, nil, nil, fmt.Errorf("could not set up header removal: %w", err)
+	}
+
+	return pw, ctx, page, nil
+}
 
 func resolveUserDataDir(rawPath string) (string, error) {
 	trimmed := strings.TrimSpace(rawPath)
@@ -270,67 +363,15 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 		}
 	}
 
-	fmt.Println("Starting Playwright...")
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	fmt.Println("Playwright started.")
-
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-	fmt.Println("User data directory ensured:", cfg.UserDataDir)
-
-	fmt.Println("Launching persistent browser context...")
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for auth
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	fmt.Println("Starting Playwright and browser context...")
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false, // Always interactive for auth
+		ensureProfileDir: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
-	fmt.Println("Browser context launched.")
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	fmt.Println("Adding init script to hide automation indicators...")
-	err = ctx.AddInitScript(playwright.Script{Content: &script})
-	if err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-	fmt.Println("Init script added.")
-
-	fmt.Println("Creating new page...")
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-	fmt.Println("Page created.")
-
-	fmt.Println("Setting viewport size to 1440x810...")
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-	fmt.Println("Viewport size set.")
-
-	fmt.Println("Setting up header removal...")
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
-	fmt.Println("Header removal setup complete.")
+	fmt.Println("Browser context ready.")
 
 	fmt.Println("Navigating to:", authURL)
 	if _, err = page.Goto(authURL); err != nil {
@@ -442,56 +483,15 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 }
 
 func runSearch(cfg Config, query string) error {
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-
-	if _, err := os.Stat(cfg.UserDataDir); os.IsNotExist(err) {
-		return fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", cfg.UserDataDir)
-	}
-
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(cfg.Headless),
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:               cfg.Headless,
+		requireExistingProfile: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-
-	// Inject script to hide automation indicators.
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
 
 	searchURL := fmt.Sprintf("https://wolt.com/en/search?q=%s&target=items&filters=delivers_now%%3Ddelivers_now_toggle", url.QueryEscape(query))
 
@@ -590,55 +590,15 @@ type BasketItemOutput struct {
 func runBasket(cfg Config) error {
 	fmt.Println("Loading current basket...")
 
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-
-	if _, err := os.Stat(cfg.UserDataDir); os.IsNotExist(err) {
-		return fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", cfg.UserDataDir)
-	}
-
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(cfg.Headless),
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:               cfg.Headless,
+		requireExistingProfile: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
 
 	resChan := attachBasketResponseCapture(page)
 	requestStartedAt := time.Now()
@@ -713,69 +673,17 @@ func runBasketAddFromProductDetail(cfg Config, venueSlug, itemID string) error {
 	fmt.Printf("Opening basket add page: %s\n", targetURL)
 	basketAddDebugf("after: product detail URL ready")
 
-	basketAddDebugf("before: start playwright for product detail add flow")
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-	basketAddDebugf("after: playwright started for product detail add flow")
-
-	basketAddDebugf("before: ensure user data dir exists (%s)", cfg.UserDataDir)
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-	basketAddDebugf("after: user data dir ready")
-
-	basketAddDebugf("before: launch persistent browser context")
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for basket actions
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	basketAddDebugf("before: launch browser session for product detail add flow")
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false, // Always interactive for basket actions
+		ensureProfileDir: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-	basketAddDebugf("after: persistent browser context launched")
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	basketAddDebugf("before: add anti-detection init script")
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-	basketAddDebugf("after: anti-detection init script added")
-
-	basketAddDebugf("before: create new page")
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-	basketAddDebugf("after: new page created")
-
-	basketAddDebugf("before: set viewport")
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-	basketAddDebugf("after: viewport set to 1440x810")
-
-	basketAddDebugf("before: set up header removal")
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
-	basketAddDebugf("after: header removal is set up")
+	basketAddDebugf("after: browser session launched for product detail add flow")
 
 	basketAddDebugf("before: attach basket API response capture")
 	resChan := attachBasketResponseCapture(page)
@@ -914,67 +822,17 @@ func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string, debugf 
 		}
 	}
 
-	if _, err := os.Stat(cfg.UserDataDir); os.IsNotExist(err) {
-		return 0, fmt.Errorf("no saved session found in '%s'. Please run the 'auth' command first", cfg.UserDataDir)
-	}
-
-	debug("before: start playwright for basket pre-check")
-	pw, err := playwright.Run()
-	if err != nil {
-		return 0, fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-	debug("after: playwright started for basket pre-check")
-
-	debug("before: launch persistent browser context for basket pre-check")
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(cfg.Headless),
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	debug("before: launch browser session for basket pre-check")
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:               cfg.Headless,
+		requireExistingProfile: true,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("could not launch persistent context: %w", err)
+		return 0, err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-	debug("after: persistent browser context launched for basket pre-check")
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	debug("before: add init script for basket pre-check")
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return 0, fmt.Errorf("could not add init script: %w", err)
-	}
-	debug("after: init script added for basket pre-check")
-
-	debug("before: create new page for basket pre-check")
-	page, err := ctx.NewPage()
-	if err != nil {
-		return 0, fmt.Errorf("could not create new page: %w", err)
-	}
-	debug("after: new page created for basket pre-check")
-
-	debug("before: set viewport for basket pre-check")
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return 0, fmt.Errorf("could not set viewport size: %w", err)
-	}
-	debug("after: viewport set for basket pre-check")
-
-	debug("before: set up header removal for basket pre-check")
-	if err := setupHeaderRemoval(page); err != nil {
-		return 0, fmt.Errorf("could not set up header removal: %w", err)
-	}
-	debug("after: header removal set for basket pre-check")
+	debug("after: browser session launched for basket pre-check")
 
 	debug("before: attach basket API response capture for basket pre-check")
 	resChan := attachBasketResponseCapture(page)
@@ -1019,69 +877,17 @@ func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
 	fmt.Printf("Opening checkout page for basket add: %s\n", targetURL)
 	basketAddDebugf("after: checkout increment URL ready")
 
-	basketAddDebugf("before: start playwright for checkout increment flow")
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-	basketAddDebugf("after: playwright started for checkout increment flow")
-
-	basketAddDebugf("before: ensure user data dir exists (%s)", cfg.UserDataDir)
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-	basketAddDebugf("after: user data dir ready")
-
-	basketAddDebugf("before: launch persistent browser context")
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for basket actions
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	basketAddDebugf("before: launch browser session for checkout increment flow")
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false, // Always interactive for basket actions
+		ensureProfileDir: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-	basketAddDebugf("after: persistent browser context launched")
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	basketAddDebugf("before: add anti-detection init script")
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-	basketAddDebugf("after: anti-detection init script added")
-
-	basketAddDebugf("before: create new page")
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-	basketAddDebugf("after: new page created")
-
-	basketAddDebugf("before: set viewport")
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-	basketAddDebugf("after: viewport set to 1440x810")
-
-	basketAddDebugf("before: set up header removal")
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
-	basketAddDebugf("after: header removal is set up")
+	basketAddDebugf("after: browser session launched for checkout increment flow")
 
 	basketAddDebugf("before: attach basket API response capture")
 	resChan := attachBasketResponseCapture(page)
@@ -1184,69 +990,17 @@ func runBasketRemoveFromCheckout(cfg Config, venueSlug, itemID string, quantity 
 	fmt.Printf("Opening checkout page for basket remove: %s\n", targetURL)
 	basketRemoveDebugf("after: checkout remove URL ready")
 
-	basketRemoveDebugf("before: start playwright for checkout remove flow")
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-	basketRemoveDebugf("after: playwright started for checkout remove flow")
-
-	basketRemoveDebugf("before: ensure user data dir exists (%s)", cfg.UserDataDir)
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-	basketRemoveDebugf("after: user data dir ready")
-
-	basketRemoveDebugf("before: launch persistent browser context")
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for basket actions
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	basketRemoveDebugf("before: launch browser session for checkout remove flow")
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false, // Always interactive for basket actions
+		ensureProfileDir: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-	basketRemoveDebugf("after: persistent browser context launched")
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	basketRemoveDebugf("before: add anti-detection init script")
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-	basketRemoveDebugf("after: anti-detection init script added")
-
-	basketRemoveDebugf("before: create new page")
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-	basketRemoveDebugf("after: new page created")
-
-	basketRemoveDebugf("before: set viewport")
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-	basketRemoveDebugf("after: viewport set to 1440x810")
-
-	basketRemoveDebugf("before: set up header removal")
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
-	basketRemoveDebugf("after: header removal is set up")
+	basketRemoveDebugf("after: browser session launched for checkout remove flow")
 
 	basketRemoveDebugf("before: attach basket API response capture")
 	resChan := attachBasketResponseCapture(page)
@@ -1391,55 +1145,15 @@ func runCheckout(cfg Config, venueSlug string) error {
 	targetURL := buildCheckoutURL(venueSlug)
 	fmt.Printf("Opening checkout page: %s\n", targetURL)
 
-	pw, err := playwright.Run()
-	if err != nil {
-		return fmt.Errorf("could not start playwright: %w", err)
-	}
-	defer pw.Stop()
-
-	if err := os.MkdirAll(cfg.UserDataDir, 0o755); err != nil {
-		return fmt.Errorf("could not create user data directory: %w", err)
-	}
-
-	ctx, err := pw.Firefox.LaunchPersistentContext(cfg.UserDataDir, playwright.BrowserTypeLaunchPersistentContextOptions{
-		Headless:  playwright.Bool(false), // Always interactive for checkout
-		UserAgent: playwright.String("Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"),
+	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false, // Always interactive for checkout
+		ensureProfileDir: true,
 	})
 	if err != nil {
-		return fmt.Errorf("could not launch persistent context: %w", err)
+		return err
 	}
+	defer pw.Stop()
 	defer ctx.Close()
-
-	script := `
-		Object.defineProperty(navigator, 'webdriver', { get: () => false });
-		Object.defineProperty(navigator, 'plugins', {
-			get: () => [
-				{ name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-			],
-		});
-		const originalQuery = navigator.permissions.query;
-		navigator.permissions.query = (parameters) => (
-			parameters.name === 'notifications'
-				? Promise.resolve({ state: 'prompt' })
-				: originalQuery(parameters)
-		);
-	`
-	if err := ctx.AddInitScript(playwright.Script{Content: &script}); err != nil {
-		return fmt.Errorf("could not add init script: %w", err)
-	}
-
-	page, err := ctx.NewPage()
-	if err != nil {
-		return fmt.Errorf("could not create new page: %w", err)
-	}
-
-	if err := page.SetViewportSize(1440, 810); err != nil {
-		return fmt.Errorf("could not set viewport size: %w", err)
-	}
-
-	if err := setupHeaderRemoval(page); err != nil {
-		return fmt.Errorf("could not set up header removal: %w", err)
-	}
 
 	if _, err := page.Goto(targetURL); err != nil {
 		return fmt.Errorf("could not go to checkout URL: %w", err)

@@ -52,6 +52,9 @@ During initial development, several challenges were encountered, primarily revol
 -   **Basket Restore Modal Handling:** Basket add direct item flow now explicitly waits for and confirms `[data-test-id="restore-order-modal.confirm"]` before submitting item add. Checkout cart-aware increment path does not run this modal step.
 -   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
 -   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
+-   **User Data Dir Safety Validation:** Config loading now rejects empty/root `user_data_dir`, and `auth --erase-data` refuses destructive targets such as filesystem root, home directory, and current working directory.
+-   **Stale Automation Path Cleanup:** Removed unused internal automation-only code paths and related tests (`runAutomation`, `waitAuthorized*`, and `runBasketItemAction`) to keep command behavior aligned with supported CLI surface.
+-   **Shared Browser Bootstrap Helper:** Added a common Playwright session launcher that centralizes persistent context startup, anti-detection init script, viewport setup, and request header routing across auth/search/basket/checkout flows.
 
 ## Usage Notes for Agent
 
