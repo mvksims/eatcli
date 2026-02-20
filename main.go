@@ -734,37 +734,16 @@ func runBasketAddFromProductDetail(cfg Config, venueSlug, itemID string) error {
 	basketAddDebugf("after: product detail page fully loaded")
 
 	restoreSelector := `[data-test-id="restore-order-modal.confirm"]`
-	restoreButton := page.Locator(restoreSelector).Nth(0)
-	basketAddDebugf("before: wait for restore-order confirm button (%s)", restoreSelector)
-	if err := restoreButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find restore-order confirm button '%s': %w", restoreSelector, err)
+	basketAddDebugf("before: check optional restore-order confirm button (%s)", restoreSelector)
+	clickedRestore, err := maybeConfirmRestoreOrderModal(page, cfg.Timeout)
+	if err != nil {
+		return err
 	}
-	basketAddDebugf("after: restore-order confirm button is visible")
-
-	basketAddDebugf("before: click restore-order confirm button")
-	clickedRestore := false
-	for attempt := 1; attempt <= 3; attempt++ {
-		restoreButton = page.Locator(restoreSelector).Nth(0)
-		if err := restoreButton.Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(3000),
-		}); err != nil {
-			if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
-				basketAddDebugf("after: restore-order confirm click retry needed (attempt %d): %v", attempt, err)
-				time.Sleep(150 * time.Millisecond)
-				continue
-			}
-			return fmt.Errorf("could not click restore-order confirm button '%s': %w", restoreSelector, err)
-		}
-		clickedRestore = true
-		break
+	if clickedRestore {
+		basketAddDebugf("after: optional restore-order confirm button clicked")
+	} else {
+		basketAddDebugf("after: optional restore-order confirm button not visible; continuing")
 	}
-	if !clickedRestore {
-		return fmt.Errorf("could not click restore-order confirm button '%s' after retries", restoreSelector)
-	}
-	basketAddDebugf("after: restore-order confirm button clicked")
 
 	submitSelector := `[data-test-id="product-modal.submit"]`
 	submitButton := page.Locator(submitSelector).Nth(0)
@@ -1613,7 +1592,7 @@ func isBasketPageRequest(method, requestURL string) bool {
 func maybeConfirmRestoreOrderModal(page playwright.Page, timeout time.Duration) (bool, error) {
 	selector := `[data-test-id="restore-order-modal.confirm"]`
 	waitTimeout := basketRestoreModalWaitTimeout(timeout)
-	deadline := time.Now().Add(waitTimeout + basketRestoreModalExtraWaitTimeout())
+	deadline := time.Now().Add(waitTimeout)
 	button := page.Locator(selector).Nth(0)
 
 	for time.Now().Before(deadline) {
@@ -1662,10 +1641,6 @@ func basketRestoreModalWaitTimeout(timeout time.Duration) time.Duration {
 		return timeout
 	}
 	return maxWait
-}
-
-func basketRestoreModalExtraWaitTimeout() time.Duration {
-	return 10 * time.Second
 }
 
 func isPlaywrightTimeoutError(err error) bool {

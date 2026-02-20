@@ -110,7 +110,7 @@ This command increases quantity for a specific item in your basket and prints th
 Flow:
 - It first checks basket state and looks for the requested item ID inside the same venue basket.
 - If the item is already in that venue basket, it opens checkout and increments from the cart item modal.
-- If the item is not in cart, it opens the item detail page, waits for and confirms `restore-order-modal.confirm`, then clicks `product-modal.submit`, waits for refreshed baskets API response, and prints normalized basket JSON.
+- If the item is not in cart, it opens the item detail page, optionally confirms `restore-order-modal.confirm` when shown, then clicks `product-modal.submit`, waits for refreshed baskets API response, and prints normalized basket JSON.
 
 Output uses the same `baskets` shape as `basket`.
 
