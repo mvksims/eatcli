@@ -1,0 +1,133 @@
+{
+  "basket": {
+    "baskets": [
+      {
+        "add_items_call_to_action": {
+          "enabled": true,
+          "style": {
+            "icon": "DEFAULT",
+            "type": "SECONDARY"
+          },
+          "value": "Add more items"
+        },
+        "basket_call_to_action": {
+          "enabled": true,
+          "link": "GO_TO_CHECKOUT",
+          "style": {
+            "icon": "DEFAULT",
+            "type": "PRIMARY"
+          },
+          "value": "Go to checkout"
+        },
+        "expiry_notice": null,
+        "id": "69939718285af11962aae8b3",
+        "item_availability_notice": {
+          "style": "DEFAULT",
+          "value": "1 item in this cart is currently unavailable."
+        },
+        "items": [
+          {
+            "count": 1,
+            "id": "0e51f3f964f104b1f4a91650",
+            "image": {
+              "blurhash": "LvQm3Xj[~pj?NIayt5kCx]ayM{j[",
+              "url": "https://imageproxy.example.com/assets/683853f5e3e69835ce1c4105"
+            },
+            "is_available": true,
+            "name": "Selga mini vafeles ar vaniļas garšu 250g",
+            "options": null,
+            "price": 399,
+            "substitution_settings": {
+              "comment": null,
+              "is_allowed": true
+            },
+            "weighted_item_info": null
+          },
+          {
+            "count": 1,
+            "id": "97bc06ecdd525c997359d384",
+            "image": {
+              "blurhash": "LsR2xuog.Se-MxaetRkC.mbIMdae",
+              "url": "https://imageproxy.example.com/assets/683853f5e3e69835ce1c40fb"
+            },
+            "is_available": true,
+            "name": "Roshen vafeles ar lazdu riekstu pildījumu, 216g",
+            "options": null,
+            "price": 199,
+            "substitution_settings": {
+              "comment": null,
+              "is_allowed": true
+            },
+            "weighted_item_info": null
+          },
+          {
+            "count": 1,
+            "id": "52a7772d08d5b4b5abe2900a",
+            "image": null,
+            "is_available": false,
+            "name": "Red Bull Zero enerģijas dzēriens, 250ml",
+            "options": null,
+            "price": 145,
+            "substitution_settings": {
+              "comment": null,
+              "is_allowed": true
+            },
+            "weighted_item_info": null
+          },
+          {
+            "count": 1,
+            "id": "36875c5771bbc9f3e38d1cc0",
+            "image": {
+              "blurhash": "L$ODd|oM_2n$j[jZaya}~qayIUj]",
+              "url": "https://imageproxy.example.com/assets/683853f5e3e69835ce1c4106"
+            },
+            "is_available": true,
+            "name": "Selga kakao vafeles rullīši ar šokolādes krēma pildījumu 160g",
+            "options": null,
+            "price": 295,
+            "substitution_settings": {
+              "comment": null,
+              "is_allowed": true
+            },
+            "weighted_item_info": null
+          }
+        ],
+        "telemetry": {
+          "basket_creation_time": 1771280152,
+          "basket_total": 893,
+          "venue_estimates": {
+            "max_estimate": 55,
+            "min_estimate": 45
+          }
+        },
+        "timestamp_updated": 1771281974,
+        "total": "€8.93",
+        "user_id": "5a3859b7d758c8000a859402",
+        "venue": {
+          "available": true,
+          "city_slug": "riga",
+          "country": "LVA",
+          "delivery_status": {
+            "style": "DEFAULT",
+            "value": "Delivery in 45-55 min"
+          },
+          "id": "62430901d7678f5b344972e4",
+          "image": {
+            "blurhash": "U16Djxx]0$o~T0j@jtWV01NH}=WD-:WCazs.",
+            "url": "https://imageproxy.example.com/mes-image/89420827-b3c6-46da-be58-14d2f5024f18/50bfa419-65ec-49e2-a5d8-49b9e0f08cdc"
+          },
+          "language": "en",
+          "name": "Wolt Market Grīziņkalna",
+          "open_status": null,
+          "product_line": "grocery",
+          "slug": "market-grizinkalna"
+        }
+      }
+    ],
+    "start_after_time": null
+  },
+  "request": {
+    "status": 200,
+    "url": "https://consumer-api.example.com/order-xp/web/v1/pages/baskets?lat=56.96130330207929\u0026lon=24.101721681654453"
+  }
+}

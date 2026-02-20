@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +78,7 @@ timeout_seconds: 30
 
 func TestValidateEraseUserDataDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	safePath := filepath.Join(tmpDir, "profile", "wolt")
+	safePath := filepath.Join(tmpDir, "profile", "session-data")
 	if err := validateEraseUserDataDir(safePath); err != nil {
 		t.Fatalf("expected safe path to pass erase validation, got: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestExtractSearchProducts_BasicFields(t *testing.T) {
 							"price": float64(289),
 							"venue": map[string]interface{}{
 								"id":   "62430901d7678f5b344972e4",
-								"slug": "wolt-market-grizinkalna",
+								"slug": "market-grizinkalna",
 							},
 						},
 					},
@@ -131,7 +132,7 @@ func TestExtractSearchProducts_BasicFields(t *testing.T) {
 	if got.VenueID != "62430901d7678f5b344972e4" {
 		t.Fatalf("unexpected venue id: %s", got.VenueID)
 	}
-	if got.VenueSlug != "wolt-market-grizinkalna" {
+	if got.VenueSlug != "market-grizinkalna" {
 		t.Fatalf("unexpected venue slug: %s", got.VenueSlug)
 	}
 	if got.Price != float64(289) {
@@ -155,7 +156,7 @@ func TestExtractSearchProducts_FallbackFromURL(t *testing.T) {
 									"amount": float64(399),
 								},
 							},
-							"link": "/en/lva/riga/venue/wolt-market-grizinkalna/selga-cepumi-itemid-3135258a5f2ffa0c518ab4b8",
+							"link": "/en/lva/riga/venue/market-grizinkalna/selga-cepumi-itemid-3135258a5f2ffa0c518ab4b8",
 						},
 					},
 				},
@@ -172,7 +173,7 @@ func TestExtractSearchProducts_FallbackFromURL(t *testing.T) {
 	if got.ID != "3135258a5f2ffa0c518ab4b8" {
 		t.Fatalf("expected id from URL fallback, got %s", got.ID)
 	}
-	if got.VenueSlug != "wolt-market-grizinkalna" {
+	if got.VenueSlug != "market-grizinkalna" {
 		t.Fatalf("expected venue slug from URL fallback, got %s", got.VenueSlug)
 	}
 	if got.Price != float64(399) {
@@ -192,7 +193,7 @@ func TestExtractSearchProducts_MissingIDStillReturnsProduct(t *testing.T) {
 							},
 							"price": float64(129),
 							"venue": map[string]interface{}{
-								"slug": "wolt-market-grizinkalna",
+								"slug": "market-grizinkalna",
 							},
 						},
 					},
@@ -213,7 +214,7 @@ func TestExtractSearchProducts_MissingIDStillReturnsProduct(t *testing.T) {
 	if got.Name != "Selga cream biscuits" {
 		t.Fatalf("unexpected name: %s", got.Name)
 	}
-	if got.VenueSlug != "wolt-market-grizinkalna" {
+	if got.VenueSlug != "market-grizinkalna" {
 		t.Fatalf("unexpected venue slug: %s", got.VenueSlug)
 	}
 }
@@ -238,7 +239,7 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 								"id":         "a22bc220dd44c8f8daa8ef96",
 								"price":      float64(289),
 								"venue_id":   "62430901d7678f5b344972e4",
-								"venue_slug": "wolt-market-grizinkalna",
+								"venue_slug": "market-grizinkalna",
 								"name":       "Selga šokolādes glazūrā 190g cepumi",
 							},
 						},
@@ -277,24 +278,44 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 	if matched.VenueID != "62430901d7678f5b344972e4" {
 		t.Fatalf("unexpected venue id: %s", matched.VenueID)
 	}
-	if matched.VenueSlug != "wolt-market-grizinkalna" {
+	if matched.VenueSlug != "market-grizinkalna" {
 		t.Fatalf("unexpected venue slug: %s", matched.VenueSlug)
 	}
 }
 
 func TestBuildBasketAddURL(t *testing.T) {
-	got := buildBasketAddURL("wolt-market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
-	want := "https://wolt.com/en/lva/riga/venue/wolt-market-grizinkalna/itemid-3135258a5f2ffa0c518ab4b8"
-	if got != want {
-		t.Fatalf("unexpected basket add URL: got %q want %q", got, want)
+	got := buildBasketAddURL("market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("buildBasketAddURL returned invalid URL %q: %v", got, err)
+	}
+	if parsed.Scheme != "https" {
+		t.Fatalf("unexpected URL scheme: %s", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		t.Fatalf("expected non-empty host in URL: %q", got)
+	}
+	wantPath := "/en/lva/riga/venue/market-grizinkalna/itemid-3135258a5f2ffa0c518ab4b8"
+	if parsed.Path != wantPath {
+		t.Fatalf("unexpected basket add URL path: got %q want %q", parsed.Path, wantPath)
 	}
 }
 
 func TestBuildCheckoutURL(t *testing.T) {
-	got := buildCheckoutURL("wolt-market-grizinkalna")
-	want := "https://wolt.com/en/lva/riga/venue/wolt-market-grizinkalna/checkout"
-	if got != want {
-		t.Fatalf("unexpected checkout URL: got %q want %q", got, want)
+	got := buildCheckoutURL("market-grizinkalna")
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("buildCheckoutURL returned invalid URL %q: %v", got, err)
+	}
+	if parsed.Scheme != "https" {
+		t.Fatalf("unexpected URL scheme: %s", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		t.Fatalf("expected non-empty host in URL: %q", got)
+	}
+	wantPath := "/en/lva/riga/venue/market-grizinkalna/checkout"
+	if parsed.Path != wantPath {
+		t.Fatalf("unexpected checkout URL path: got %q want %q", parsed.Path, wantPath)
 	}
 }
 
@@ -316,25 +337,25 @@ func TestIsBasketPageRequest(t *testing.T) {
 		{
 			name:      "matches GET baskets endpoint",
 			method:    "GET",
-			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets?currency=EUR",
+			url:       basketAPIURL + "?currency=EUR",
 			wantMatch: true,
 		},
 		{
 			name:      "matches GET case-insensitive method",
 			method:    "get",
-			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets",
+			url:       basketAPIURL,
 			wantMatch: true,
 		},
 		{
 			name:      "does not match non-GET method",
 			method:    "POST",
-			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets",
+			url:       basketAPIURL,
 			wantMatch: false,
 		},
 		{
 			name:      "does not match unrelated URL",
 			method:    "GET",
-			url:       "https://consumer-api.wolt.com/order-xp/web/v1/pages/search",
+			url:       strings.Replace(basketAPIURL, "/baskets", "/search", 1),
 			wantMatch: false,
 		},
 	}
@@ -419,7 +440,7 @@ func TestBasketCheckoutCartItemWaitTimeout(t *testing.T) {
 }
 
 func TestExtractBasketOutputs_RealPayload(t *testing.T) {
-	data, err := os.ReadFile("payloads/wolt-baskets-payload.json")
+	data, err := os.ReadFile("testdata/baskets-payload.json")
 	if err != nil {
 		t.Fatalf("failed to read basket payload fixture: %v", err)
 	}
@@ -441,7 +462,7 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	if basket.Total != "€8.93" {
 		t.Fatalf("unexpected basket total: %#v", basket.Total)
 	}
-	if basket.VenueSlug != "wolt-market-grizinkalna" {
+	if basket.VenueSlug != "market-grizinkalna" {
 		t.Fatalf("unexpected venue slug: %s", basket.VenueSlug)
 	}
 	if len(basket.Items) != 4 {
@@ -458,7 +479,7 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	if firstItem.Total != int64(399) {
 		t.Fatalf("unexpected first item total: %#v", firstItem.Total)
 	}
-	if firstItem.ImageURL != "https://imageproxy.wolt.com/assets/683853f5e3e69835ce1c4105" {
+	if firstItem.ImageURL != "https://imageproxy.example.com/assets/683853f5e3e69835ce1c4105" {
 		t.Fatalf("unexpected first item image_url: %s", firstItem.ImageURL)
 	}
 	if firstItem.Name != "Selga mini vafeles ar vaniļas garšu 250g" {
@@ -486,14 +507,14 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 func TestBasketContainsVenueItem(t *testing.T) {
 	baskets := []BasketOutput{
 		{
-			VenueSlug: "wolt-market-grizinkalna",
+			VenueSlug: "market-grizinkalna",
 			Items: []BasketItemOutput{
 				{ID: "item-a"},
 				{ID: "item-b"},
 			},
 		},
 		{
-			VenueSlug: "wolt-market-agenskalna",
+			VenueSlug: "market-agenskalna",
 			Items: []BasketItemOutput{
 				{ID: "item-a"},
 			},
@@ -508,25 +529,25 @@ func TestBasketContainsVenueItem(t *testing.T) {
 	}{
 		{
 			name:      "matches same venue and item",
-			venueSlug: "wolt-market-grizinkalna",
+			venueSlug: "market-grizinkalna",
 			itemID:    "item-a",
 			want:      true,
 		},
 		{
 			name:      "does not match different venue",
-			venueSlug: "wolt-market-grizinkalna",
+			venueSlug: "market-grizinkalna",
 			itemID:    "missing-item",
 			want:      false,
 		},
 		{
 			name:      "does not match item in other venue only",
-			venueSlug: "wolt-market-agenskalna",
+			venueSlug: "market-agenskalna",
 			itemID:    "item-b",
 			want:      false,
 		},
 		{
 			name:      "matches case insensitive and trimmed",
-			venueSlug: "  WOLT-MARKET-GRIZINKALNA ",
+			venueSlug: "  MARKET-GRIZINKALNA ",
 			itemID:    " ITEM-B ",
 			want:      true,
 		},
@@ -552,7 +573,7 @@ func TestBasketContainsVenueItem(t *testing.T) {
 func TestBasketItemQuantityForVenue(t *testing.T) {
 	baskets := []BasketOutput{
 		{
-			VenueSlug: "wolt-market-grizinkalna",
+			VenueSlug: "market-grizinkalna",
 			Items: []BasketItemOutput{
 				{ID: "item-a", Count: 2},
 				{ID: "item-a", Count: 1},
@@ -560,7 +581,7 @@ func TestBasketItemQuantityForVenue(t *testing.T) {
 			},
 		},
 		{
-			VenueSlug: "wolt-market-agenskalna",
+			VenueSlug: "market-agenskalna",
 			Items: []BasketItemOutput{
 				{ID: "item-a", Count: 7},
 			},
@@ -575,19 +596,19 @@ func TestBasketItemQuantityForVenue(t *testing.T) {
 	}{
 		{
 			name:      "sums same item in same venue",
-			venueSlug: "wolt-market-grizinkalna",
+			venueSlug: "market-grizinkalna",
 			itemID:    "item-a",
 			want:      3,
 		},
 		{
 			name:      "matches case insensitive and trimmed",
-			venueSlug: "  WOLT-MARKET-GRIZINKALNA ",
+			venueSlug: "  MARKET-GRIZINKALNA ",
 			itemID:    " ITEM-B ",
 			want:      4,
 		},
 		{
 			name:      "does not include other venue counts",
-			venueSlug: "wolt-market-grizinkalna",
+			venueSlug: "market-grizinkalna",
 			itemID:    "item-c",
 			want:      0,
 		},
