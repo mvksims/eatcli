@@ -273,15 +273,26 @@ func main() {
 
 	switch command {
 	case "auth":
-		fmt.Print("Go to wolt.com and try to login with your email address. Then copy the sign-in URL from the received email into here: ")
+		fmt.Fprint(os.Stderr, "Go to wolt.com and try to login with your email address. Then copy the sign-in URL from the received email into here: ")
 		var authURL string
 		if _, err := fmt.Scanln(&authURL); err != nil {
-			log.Fatalf("Failed to read URL: %v", err)
+			resetTerminalInputModes(os.Stderr)
+			printAuthStatus("failed", fmt.Errorf("failed to read URL: %w", err))
+			os.Exit(1)
 		}
-		fmt.Println("Running authentication process...")
-		if err := runAuth(cfg, eraseData, authURL); err != nil {
-			log.Fatalf("Authentication failed: %v", err)
+		validatedAuthURL, err := validateAuthURL(authURL)
+		if err != nil {
+			resetTerminalInputModes(os.Stderr)
+			printAuthStatus("failed", err)
+			os.Exit(1)
 		}
+		if err := runAuth(cfg, eraseData, validatedAuthURL); err != nil {
+			resetTerminalInputModes(os.Stderr)
+			printAuthStatus("failed", err)
+			os.Exit(1)
+		}
+		resetTerminalInputModes(os.Stderr)
+		printAuthStatus("success", nil)
 	case "search":
 		if len(queryParts) == 0 {
 			log.Fatalf("Search command requires at least one argument.")
@@ -330,6 +341,56 @@ func main() {
 	default:
 		log.Fatalf("Unknown command: %s. Use 'auth', 'search', 'basket', or 'checkout'.", command)
 	}
+}
+
+func printAuthStatus(status string, authErr error) {
+	result := map[string]interface{}{
+		"auth_status": status,
+	}
+	if authErr != nil {
+		result["error"] = authErr.Error()
+	}
+
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		fmt.Printf("{\"auth_status\":%q}\n", status)
+		return
+	}
+	fmt.Println(string(resultJSON))
+}
+
+func resetTerminalInputModes(file *os.File) {
+	if file == nil {
+		return
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return
+	}
+	if (info.Mode() & os.ModeCharDevice) == 0 {
+		return
+	}
+	// Reset common interactive terminal input modes so arrow keys continue to work.
+	fmt.Fprint(file, "\x1b[?1l\x1b[?2004l\x1b>")
+}
+
+func validateAuthURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("auth URL is incorrect: domain must be wolt.com")
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("auth URL is incorrect: domain must be wolt.com")
+	}
+
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname != "wolt.com" && !strings.HasSuffix(hostname, ".wolt.com") {
+		return "", fmt.Errorf("auth URL is incorrect: domain must be wolt.com")
+	}
+
+	return trimmed, nil
 }
 
 // simulateHumanBehavior attempts to move the mouse randomly across the page
@@ -387,13 +448,11 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 		if err := validateEraseUserDataDir(cfg.UserDataDir); err != nil {
 			return err
 		}
-		fmt.Printf("Erasing session data from '%s'...\n", cfg.UserDataDir)
 		if err := os.RemoveAll(cfg.UserDataDir); err != nil {
 			return fmt.Errorf("failed to erase user data directory: %w", err)
 		}
 	}
 
-	fmt.Println("Starting Playwright and browser context...")
 	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
 		headless:         false, // Always interactive for auth
 		ensureProfileDir: true,
@@ -401,78 +460,62 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Browser context ready.")
-
-	fmt.Println("Navigating to:", authURL)
+	defer func() {
+		if err := ctx.Close(); err != nil {
+			log.Printf("Warning: Could not close browser context: %v", err)
+		}
+	}()
+	defer func() {
+		if err := pw.Stop(); err != nil {
+			log.Printf("Warning: Could not stop playwright: %v", err)
+		}
+	}()
 	if _, err = page.Goto(authURL); err != nil {
 		return fmt.Errorf("could not go to auth URL: %w", err)
 	}
-	fmt.Println("Navigation initiated. Waiting for network to be idle.")
 
 	// Wait for the page to be fully loaded (including network idle)
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
 		return fmt.Errorf("failed to wait for page network idle: %w", err)
 	}
-	fmt.Println("Page network is idle.")
 
 	// Simulate human-like mouse movements
-	if err := simulateHumanBehavior(page); err != nil {
-		log.Printf("Warning: Could not simulate human behavior: %v", err)
-	}
-	fmt.Println("Human behavior simulation complete. Waiting for page network to be idle again.")
+	_ = simulateHumanBehavior(page)
 
 	// Wait for the page to be fully loaded (including network idle) after potential redirects/JS execution
 	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
 		return fmt.Errorf("failed to wait for page network idle after human simulation: %w", err)
 	}
-	fmt.Println("Page network is idle again.")
 
 	// Attempt to click the "Use only necessary" button first, if it exists
-	fmt.Println("Attempting to find and click 'Use only necessary' button...")
 	useNecessaryButtonLocator := page.Locator("text=Use only necessary").Nth(0)
 	if err := useNecessaryButtonLocator.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(10000), // Shorter timeout for this button
 	}); err == nil {
-		fmt.Println("'Use only necessary' button found. Clicking...")
-		if err := useNecessaryButtonLocator.Click(); err != nil {
-			log.Printf("Warning: Could not click 'Use only necessary' button: %v", err)
-		} else {
-			fmt.Println("'Use only necessary' button clicked. Waiting for page to settle after click.")
+		if err := useNecessaryButtonLocator.Click(); err == nil {
 			if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
-				log.Printf("Warning: Failed to wait for network idle after 'Use only necessary' click: %v", err)
+				// Non-critical wait; continue flow.
 			}
-			fmt.Println("Page settled after 'Use only necessary' click.")
 		}
-	} else {
-		fmt.Println("'Use only necessary' button not found or not visible within timeout.")
 	}
 
 	// Click the decline button first, if it exists
-	fmt.Println("Attempting to find and click decline button with data-test-id=\"decline-button\"...")
 	declineButtonSelector := "[data-test-id=\"decline-button\"]"
 	declineButtonLocator := page.Locator(declineButtonSelector).Nth(0)
 	if err := declineButtonLocator.WaitFor(playwright.LocatorWaitForOptions{
 		State:   playwright.WaitForSelectorStateVisible,
 		Timeout: playwright.Float(10000), // Shorter timeout for decline button, as it might not always exist
 	}); err == nil {
-		fmt.Println("Decline button found. Clicking...")
-		if err := declineButtonLocator.Click(); err != nil {
-			log.Printf("Warning: Could not click decline button '%s': %v", declineButtonSelector, err)
-		} else {
-			fmt.Println("Decline button clicked. Waiting for page to settle after click.")
+		if err := declineButtonLocator.Click(); err == nil {
 			// Wait for page to settle after click
 			if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
-				log.Printf("Warning: Failed to wait for network idle after decline button click: %v", err)
+				// Non-critical wait; continue flow.
 			}
-			fmt.Println("Page settled after decline button click.")
 		}
-	} else {
-		fmt.Println("Decline button not found or not visible within timeout (this is often expected).")
 	}
 
 	// Find the confirm button and click it
-	fmt.Println("Waiting for confirm button with data-test-id=\"magic-login-landing.confirm\"...")
 	confirmButtonSelector := "[data-test-id=\"magic-login-landing.confirm\"]"
 	confirmButton, err := page.WaitForSelector(confirmButtonSelector, playwright.PageWaitForSelectorOptions{
 		State:   playwright.WaitForSelectorStateVisible,
@@ -481,11 +524,9 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	if err != nil {
 		return fmt.Errorf("could not find or wait for confirm button '%s': %w", confirmButtonSelector, err)
 	}
-	fmt.Println("Confirm button found. Clicking...")
 	if err := confirmButton.Click(); err != nil {
 		return fmt.Errorf("could not click confirm button '%s': %w", confirmButtonSelector, err)
 	}
-	fmt.Println("Confirm button clicked. Waiting for navigation to 'https://wolt.com/en/discovery'.")
 
 	// Wait for the page to reload into the success URL
 	successURL := "https://wolt.com/en/discovery"
@@ -494,21 +535,15 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	}); err != nil {
 		return fmt.Errorf("failed to navigate to '%s': %w", successURL, err)
 	}
-	fmt.Println("Successfully navigated to discovery page.")
+	isAuthorized, err := hasUserStatusDropdown(page, cfg.Timeout)
+	if err != nil {
+		return fmt.Errorf("could not validate login status after authentication: %w", err)
+	}
+	if !isAuthorized {
+		return fmt.Errorf("authentication failed: could not confirm login after the sign-in flow; the sign-in URL might be expired, request a new link and try again")
+	}
 
-	fmt.Println("Login successful. Session persisted in:", cfg.UserDataDir)
-
-	fmt.Println("Waiting 5 seconds before closing the browser...")
 	time.Sleep(5 * time.Second)
-	fmt.Println("Closing browser.")
-
-	if err := ctx.Close(); err != nil {
-		log.Printf("Warning: Could not close browser context: %v", err)
-	}
-	// Stop Playwright after the context is closed and saved
-	if err := pw.Stop(); err != nil {
-		return fmt.Errorf("could not stop playwright: %w", err)
-	}
 	return nil
 }
 
@@ -1833,15 +1868,23 @@ func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Durat
 }
 
 func ensureUserAuthorized(page playwright.Page, timeout time.Duration) error {
-	waitTimeout := userStatusDropdownWaitTimeout(timeout)
-	visible, err := isLocatorVisible(page, userStatusDropdownID, waitTimeout)
+	visible, err := hasUserStatusDropdown(page, timeout)
 	if err != nil {
-		return fmt.Errorf("could not verify login status via '%s': %w", userStatusDropdownID, err)
+		return err
 	}
 	if !visible {
 		return fmt.Errorf("session appears logged out. Please authorize with the 'auth' command first")
 	}
 	return nil
+}
+
+func hasUserStatusDropdown(page playwright.Page, timeout time.Duration) (bool, error) {
+	waitTimeout := userStatusDropdownWaitTimeout(timeout)
+	visible, err := isLocatorVisible(page, userStatusDropdownID, waitTimeout)
+	if err != nil {
+		return false, fmt.Errorf("could not verify login status via '%s': %w", userStatusDropdownID, err)
+	}
+	return visible, nil
 }
 
 func isLocatorVisible(page playwright.Page, selector string, timeout time.Duration) (bool, error) {

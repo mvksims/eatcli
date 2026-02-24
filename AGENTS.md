@@ -5,7 +5,7 @@ This document contains notes and context from the Gemini CLI agent regarding the
 ## Project Summary
 
 This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for command-based flows:
-1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
+1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. Before reporting success, it verifies `UserStatusDropdown`; only then is the browser session considered persisted to `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
 3.  **`basket` command:** Returns the current basket payload as JSON for the active session, and verifies login presence using `UserStatusDropdown` after the initial page load.
 4.  **`basket add` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`. If present, it opens checkout and increments quantity through the cart item modal; if absent, it opens the item detail page, confirms restore-order modal, clicks submit, and captures the refreshed baskets API response to print normalized JSON.
@@ -53,6 +53,10 @@ During initial development, several challenges were encountered, primarily revol
 -   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
 -   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
 -   **Basket/Checkout Login Guard:** Basket and checkout flows now validate `[data-test-id="UserStatusDropdown"]` after initial page load; when absent, commands fail fast and instruct running `auth` first.
+-   **Auth Login Guard:** `auth` now validates `[data-test-id="UserStatusDropdown"]` after redirecting to discovery and returns failure when the marker is not visible, instead of printing successful session persistence.
+-   **Auth Status JSON Output:** `auth` command now emits a simple final JSON status object (`{"auth_status":"success"}` or `{"auth_status":"failed","error":"..."}`), replacing `log.Fatalf`-style failure output for auth execution errors.
+-   **Auth URL Domain Validation:** Auth input URL from the sign-in prompt is now validated to require `wolt.com` domain (or its subdomains); invalid domains fail fast with auth status JSON error.
+-   **Auth Terminal Mode Reset:** Auth now resets common terminal input modes on completion/failure and always tears down Playwright context with deferred cleanup, preventing arrow keys from printing raw escape sequences (`^[OA` style) after auth exits with code 1.
 -   **User Data Dir Safety Validation:** Config loading now rejects empty/root `user_data_dir`, and `auth --erase-data` refuses destructive targets such as filesystem root, home directory, and current working directory.
 -   **Stale Automation Path Cleanup:** Removed unused internal automation-only code paths and related tests (`runAutomation`, `waitAuthorized*`, and `runBasketItemAction`) to keep command behavior aligned with supported CLI surface.
 -   **Shared Browser Bootstrap Helper:** Added a common Playwright session launcher that centralizes persistent context startup, anti-detection init script, viewport setup, and request header routing across auth/search/basket/checkout flows.

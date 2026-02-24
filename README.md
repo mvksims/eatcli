@@ -51,9 +51,17 @@ go run main.go <command> [options] [config.yml] [args...]
 ### `auth` Command
 
 This command is your one-time sign-in step. It stores your session in `user_data_dir` so shopping commands can reuse it without requiring login each time.
+Before reporting success, it verifies `[data-test-id="UserStatusDropdown"]`. If that marker is not visible, `auth` returns a failure instead of persisting a successful result.
+Final command output is a simple JSON object with auth status:
+- Success: `{"auth_status":"success"}`
+- Failure: `{"auth_status":"failed","error":"..."}`
 
 **Options:**
 - `--erase-data`: Force deletion of existing session data before authenticating. Use this to start a fresh login session.
+
+Input requirement:
+- The sign-in URL entered in the prompt must be on `wolt.com` (including subdomains such as `www.wolt.com`).
+- If not, auth fails with JSON status: `{"auth_status":"failed","error":"auth URL is incorrect: domain must be wolt.com"}`.
 
 **Examples:**
 ```bash

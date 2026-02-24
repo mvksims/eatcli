@@ -148,6 +148,66 @@ func TestResolveVenueBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidateAuthURL(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantOut   string
+		expectErr bool
+	}{
+		{
+			name:      "accepts wolt domain",
+			input:     "https://wolt.com/en/discovery",
+			wantOut:   "https://wolt.com/en/discovery",
+			expectErr: false,
+		},
+		{
+			name:      "accepts wolt subdomain",
+			input:     "https://www.wolt.com/en/discovery",
+			wantOut:   "https://www.wolt.com/en/discovery",
+			expectErr: false,
+		},
+		{
+			name:      "rejects non wolt domain",
+			input:     "https://example.com/login",
+			expectErr: true,
+		},
+		{
+			name:      "rejects invalid url",
+			input:     "not-a-url",
+			expectErr: true,
+		},
+		{
+			name:      "rejects empty input",
+			input:     "   ",
+			expectErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := validateAuthURL(tc.input)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected validation error for input %q", tc.input)
+				}
+				if !strings.Contains(err.Error(), "auth URL is incorrect") {
+					t.Fatalf("unexpected validation error: %v", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("expected valid URL, got error: %v", err)
+			}
+			if got != tc.wantOut {
+				t.Fatalf("unexpected normalized URL: got %q want %q", got, tc.wantOut)
+			}
+		})
+	}
+}
+
 func TestExtractSearchProducts_BasicFields(t *testing.T) {
 	response := map[string]interface{}{
 		"sections": []interface{}{
