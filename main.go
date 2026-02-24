@@ -454,7 +454,7 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	}
 
 	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
-		headless:         false, // Always interactive for auth
+		headless:         cfg.Headless,
 		ensureProfileDir: true,
 	})
 	if err != nil {

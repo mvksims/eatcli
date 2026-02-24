@@ -55,6 +55,7 @@ Before reporting success, it verifies `[data-test-id="UserStatusDropdown"]`. If 
 Final command output is a simple JSON object with auth status:
 - Success: `{"auth_status":"success"}`
 - Failure: `{"auth_status":"failed","error":"..."}`
+Auth launch respects `headless` from `config.yml` while keeping the existing browser automation steps.
 
 **Options:**
 - `--erase-data`: Force deletion of existing session data before authenticating. Use this to start a fresh login session.
