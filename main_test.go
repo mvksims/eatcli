@@ -493,6 +493,40 @@ func TestBasketCheckoutCartItemWaitTimeout(t *testing.T) {
 	}
 }
 
+func TestUserStatusDropdownWaitTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   time.Duration
+		wantOut time.Duration
+	}{
+		{
+			name:    "uses max wait for zero timeout",
+			input:   0,
+			wantOut: 10 * time.Second,
+		},
+		{
+			name:    "uses provided timeout when shorter",
+			input:   2 * time.Second,
+			wantOut: 2 * time.Second,
+		},
+		{
+			name:    "caps long timeout",
+			input:   45 * time.Second,
+			wantOut: 10 * time.Second,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := userStatusDropdownWaitTimeout(tc.input)
+			if got != tc.wantOut {
+				t.Fatalf("unexpected timeout clamp: got %v want %v", got, tc.wantOut)
+			}
+		})
+	}
+}
+
 func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 	data, err := os.ReadFile("testdata/baskets-payload.json")
 	if err != nil {

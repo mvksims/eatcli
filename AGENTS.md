@@ -7,10 +7,10 @@ This document contains notes and context from the Gemini CLI agent regarding the
 This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for command-based flows:
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. The browser session is then persisted to a specified `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
-3.  **`basket` command:** Returns the current basket payload as JSON for the active session.
+3.  **`basket` command:** Returns the current basket payload as JSON for the active session, and verifies login presence using `UserStatusDropdown` after the initial page load.
 4.  **`basket add` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`. If present, it opens checkout and increments quantity through the cart item modal; if absent, it opens the item detail page, confirms restore-order modal, clicks submit, and captures the refreshed baskets API response to print normalized JSON.
 5.  **`basket remove` command:** A non-interactive flow that first checks baskets API data for `item_id` within the requested `venue_slug`, remembers its quantity, opens checkout, verifies checkout readiness via `SendOrderButton`, and when needed recovers by optionally confirming restore-order modal, clicking `cart-view-button` when shown, then clicking cart next-step before decrementing exactly that many times in the cart item modal, submitting, and printing normalized basket JSON.
-6.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, and clicks the Send Order button.
+6.  **`checkout` command:** A non-interactive flow that opens a venue checkout page using `venue_slug`, waits for full load, verifies login presence using `UserStatusDropdown`, and clicks the Send Order button.
 
 ## Key Technologies and Architecture
 
@@ -52,6 +52,7 @@ During initial development, several challenges were encountered, primarily revol
 -   **Basket Restore Modal Handling:** Basket add direct item flow now treats `[data-test-id="restore-order-modal.confirm"]` as optional and continues when it does not appear within timeout. Checkout cart-aware increment path does not run this modal step.
 -   **Checkout Command:** Added `checkout <venue_slug>` to open `https://wolt.com/en/lva/riga/venue/<venue_slug>/checkout` and click `[data-test-id="SendOrderButton"]` after full page load.
 -   **Checkout Error Modal Output:** After clicking `SendOrderButton`, `checkout` now waits up to 10 seconds for `GenericCheckoutErrorModal` and includes its inner text in output when present.
+-   **Basket/Checkout Login Guard:** Basket and checkout flows now validate `[data-test-id="UserStatusDropdown"]` after initial page load; when absent, commands fail fast and instruct running `auth` first.
 -   **User Data Dir Safety Validation:** Config loading now rejects empty/root `user_data_dir`, and `auth --erase-data` refuses destructive targets such as filesystem root, home directory, and current working directory.
 -   **Stale Automation Path Cleanup:** Removed unused internal automation-only code paths and related tests (`runAutomation`, `waitAuthorized*`, and `runBasketItemAction`) to keep command behavior aligned with supported CLI surface.
 -   **Shared Browser Bootstrap Helper:** Added a common Playwright session launcher that centralizes persistent context startup, anti-detection init script, viewport setup, and request header routing across auth/search/basket/checkout flows.

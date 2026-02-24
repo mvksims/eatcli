@@ -91,6 +91,7 @@ Example output shape:
 ### `basket` Command
 
 This command returns your current basket as JSON.
+After the initial page load, it verifies `[data-test-id="UserStatusDropdown"]`; if missing, it treats the session as logged out and asks you to run `auth` first.
 
 Output contains a `baskets` array. Each basket includes:
 - `id`
@@ -109,6 +110,7 @@ This command increases quantity for a specific item in your basket and prints th
 
 Flow:
 - It first checks basket state and looks for the requested item ID inside the same venue basket.
+- It verifies login status after initial page loads using `[data-test-id="UserStatusDropdown"]`; if missing, it stops and asks you to run `auth` first.
 - If the item is already in that venue basket, it opens checkout and increments from the cart item modal.
 - If the item is not in cart, it opens the item detail page, optionally confirms `restore-order-modal.confirm` when shown, then clicks `product-modal.submit`, waits for refreshed baskets API response, and prints normalized basket JSON.
 
@@ -125,6 +127,7 @@ This command removes a specific item from the selected venue basket and prints t
 
 Flow:
 - It first checks basket state and confirms the requested item ID exists in the same venue basket.
+- It verifies login status after initial page loads using `[data-test-id="UserStatusDropdown"]`; if missing, it stops and asks you to run `auth` first.
 - It reads the current item quantity from basket data.
 - After checkout loads, it checks if `SendOrderButton` is visible; if not, it optionally confirms `restore-order-modal.confirm`, clicks `cart-view-button` when shown, then clicks `CartViewNextStepButton`, and waits for checkout readiness.
 - It opens checkout, opens the cart item modal, clicks `product-modal.quantity.decrement` the same number of times as the current quantity, then clicks `product-modal.submit`.
@@ -138,6 +141,7 @@ go run main.go basket remove wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 ### `checkout` Command
 
 This command attempts to place the order for a venue by triggering the send-order action.
+After the initial page load, it verifies `[data-test-id="UserStatusDropdown"]`; if missing, it treats the session as logged out and asks you to run `auth` first.
 
 After attempting checkout, it waits up to 10 seconds for `GenericCheckoutErrorModal`. If it appears, the command returns the modal message in `generic_checkout_error_modal`.
 

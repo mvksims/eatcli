@@ -40,6 +40,7 @@ const (
 	defaultBasketCaptureURL = "https://wolt.com/en/discovery"
 	defaultVenueBaseURL     = "https://wolt.com/en/lva/riga"
 	basketAPIURL            = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
+	userStatusDropdownID    = `[data-test-id="UserStatusDropdown"]`
 	defaultViewportWidth    = 1440
 	defaultViewportHeight   = 810
 	firefoxUserAgent        = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:126.0) Gecko/20100101 Firefox/126.0"
@@ -646,6 +647,9 @@ func runBasket(cfg Config) error {
 	}); err != nil {
 		return fmt.Errorf("basket page did not fully load: %w", err)
 	}
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return err
+	}
 
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, requestStartedAt)
 	if err != nil {
@@ -730,6 +734,9 @@ func runBasketAddFromProductDetail(cfg Config, venueSlug, itemID string) error {
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("basket add page did not fully load: %w", err)
+	}
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return err
 	}
 	basketAddDebugf("after: product detail page fully loaded")
 
@@ -865,6 +872,11 @@ func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string, debugf 
 		return 0, fmt.Errorf("basket pre-check page did not fully load: %w", err)
 	}
 	debug("after: load state reached in basket pre-check")
+	debug("before: verify login status in basket pre-check")
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return 0, err
+	}
+	debug("after: login status confirmed in basket pre-check")
 
 	debug("before: wait for baskets API response in basket pre-check")
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, requestStartedAt)
@@ -913,6 +925,9 @@ func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("checkout page did not fully load: %w", err)
+	}
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return err
 	}
 	basketAddDebugf("after: checkout page fully loaded")
 
@@ -1026,6 +1041,9 @@ func runBasketRemoveFromCheckout(cfg Config, venueSlug, itemID string, quantity 
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("checkout page did not fully load: %w", err)
+	}
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return err
 	}
 	basketRemoveDebugf("after: checkout page fully loaded")
 
@@ -1178,6 +1196,9 @@ func runCheckout(cfg Config, venueSlug string) error {
 		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
 	}); err != nil {
 		return fmt.Errorf("checkout page did not fully load: %w", err)
+	}
+	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+		return err
 	}
 
 	sendOrderButtonSelector := `[data-test-id="SendOrderButton"]`
@@ -1811,6 +1832,18 @@ func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Durat
 	return nil
 }
 
+func ensureUserAuthorized(page playwright.Page, timeout time.Duration) error {
+	waitTimeout := userStatusDropdownWaitTimeout(timeout)
+	visible, err := isLocatorVisible(page, userStatusDropdownID, waitTimeout)
+	if err != nil {
+		return fmt.Errorf("could not verify login status via '%s': %w", userStatusDropdownID, err)
+	}
+	if !visible {
+		return fmt.Errorf("session appears logged out. Please authorize with the 'auth' command first")
+	}
+	return nil
+}
+
 func isLocatorVisible(page playwright.Page, selector string, timeout time.Duration) (bool, error) {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -1828,6 +1861,17 @@ func isLocatorVisible(page playwright.Page, selector string, timeout time.Durati
 	}
 
 	return true, nil
+}
+
+func userStatusDropdownWaitTimeout(timeout time.Duration) time.Duration {
+	const maxWait = 10 * time.Second
+	if timeout <= 0 {
+		return maxWait
+	}
+	if timeout < maxWait {
+		return timeout
+	}
+	return maxWait
 }
 
 func basketCheckoutCartItemWaitTimeout(timeout time.Duration) time.Duration {
