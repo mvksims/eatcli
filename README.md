@@ -1,6 +1,6 @@
 # EAT CLI
 
-This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, `basket remove` to remove items from basket, and `checkout` to attempt order placement and surface checkout errors.
+EAT CLI is a plug-and-play skill that lets your AI agent browse menus, customize orders, and check out from major delivery services through a single command-line interface. Today, Wolt is fully implemented and Bolt is available as a stub integration.
 
 ## License
 

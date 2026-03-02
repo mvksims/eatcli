@@ -4,7 +4,9 @@ This document contains notes and context from the agent regarding the developmen
 
 ## Project Summary
 
-This application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation. Its primary purpose is to manage persistent login sessions for web applications, allowing for command-based flows:
+EAT CLI is a plug-and-play skill that lets an AI agent browse menus, customize orders, and check out from major delivery services through one CLI interface. The current implementation is provider-based, with Wolt as the full integration and Bolt as a stub.
+
+The application implements a Go-based Command Line Interface (CLI) leveraging Playwright for browser automation, with the following command-based flows:
 1.  **`auth` command:** An interactive process where a user manually logs into a web service (e.g., Wolt) in a browser window. Before reporting success, it verifies `UserStatusDropdown`; only then is the browser session considered persisted to `user_data_dir`.
 2.  **`search` command:** A non-interactive process that reuses the persisted session to search for items on Wolt.
 3.  **`basket` command:** Returns the current basket payload as JSON for the active session, and verifies login presence using `UserStatusDropdown` after the initial page load.
