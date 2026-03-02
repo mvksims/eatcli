@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -9,7 +9,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"foodcli/internal/providers"
+	"foodcli/internal/providers/wolt"
 )
+
+const basketAPIURL = "https://consumer-api.wolt.com/order-xp/web/v1/pages/baskets"
 
 func TestLoadConfig(t *testing.T) {
 	// Create a temporary config file
@@ -17,6 +22,7 @@ func TestLoadConfig(t *testing.T) {
 success_url_pattern: "https://example.com/dashboard"
 success_selector: "#user-avatar"
 user_data_dir: "./test_profile"
+venue_base_url: "https://example.com/en/usa/new-york"
 headless: true
 timeout_seconds: 30
 `
@@ -45,8 +51,11 @@ timeout_seconds: 30
 	if filepath.Base(cfg.UserDataDir) != "test_profile" {
 		t.Errorf("expected UserDataDir to end with 'test_profile', got '%s'", cfg.UserDataDir)
 	}
-	if cfg.VenueBaseURL != defaultVenueBaseURL {
-		t.Errorf("expected VenueBaseURL default to be %q, got %q", defaultVenueBaseURL, cfg.VenueBaseURL)
+	if cfg.VenueBaseURL != "https://example.com/en/usa/new-york" {
+		t.Errorf("expected VenueBaseURL to be %q, got %q", "https://example.com/en/usa/new-york", cfg.VenueBaseURL)
+	}
+	if cfg.Provider != providers.ProviderWolt {
+		t.Errorf("expected Provider default to be %q, got %q", providers.ProviderWolt, cfg.Provider)
 	}
 	if !cfg.Headless {
 		t.Errorf("expected Headless to be true, got false")
@@ -80,11 +89,37 @@ timeout_seconds: 30
 	}
 }
 
+func TestLoadConfig_CustomProvider(t *testing.T) {
+	content := `
+success_url_pattern: "https://example.com/dashboard"
+success_selector: "#user-avatar"
+user_data_dir: "./test_profile"
+venue_base_url: "https://example.com/en/usa/new-york"
+provider: "bolt"
+headless: true
+timeout_seconds: 30
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yml")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write temp config file: %v", err)
+	}
+
+	cfg, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+	if cfg.Provider != providers.ProviderBolt {
+		t.Fatalf("unexpected provider: got %q want %q", cfg.Provider, providers.ProviderBolt)
+	}
+}
+
 func TestLoadConfig_EmptyUserDataDir(t *testing.T) {
 	content := `
 success_url_pattern: "https://example.com/dashboard"
 success_selector: "#user-avatar"
 user_data_dir: ""
+venue_base_url: "https://example.com/en/usa/new-york"
 headless: true
 timeout_seconds: 30
 `
@@ -124,15 +159,11 @@ func TestValidateEraseUserDataDir(t *testing.T) {
 }
 
 func TestResolveVenueBaseURL(t *testing.T) {
-	got, err := resolveVenueBaseURL("")
-	if err != nil {
-		t.Fatalf("expected default venue base URL, got error: %v", err)
-	}
-	if got != defaultVenueBaseURL {
-		t.Fatalf("unexpected default venue base URL: %q", got)
+	if _, err := resolveVenueBaseURL(""); err == nil {
+		t.Fatalf("expected empty venue base URL to fail validation")
 	}
 
-	got, err = resolveVenueBaseURL("https://example.com/en/usa/new-york/")
+	got, err := resolveVenueBaseURL("https://example.com/en/usa/new-york/")
 	if err != nil {
 		t.Fatalf("expected valid custom venue base URL, got error: %v", err)
 	}
@@ -145,6 +176,98 @@ func TestResolveVenueBaseURL(t *testing.T) {
 	}
 	if _, err := resolveVenueBaseURL("https://example.com/en/usa/new-york?x=1"); err == nil {
 		t.Fatalf("expected query parameters to fail venue base URL validation")
+	}
+}
+
+func TestLoadConfig_EmptyVenueBaseURL(t *testing.T) {
+	content := `
+success_url_pattern: "https://example.com/dashboard"
+success_selector: "#user-avatar"
+user_data_dir: "./test_profile"
+venue_base_url: ""
+headless: true
+timeout_seconds: 30
+`
+	tmpDir := t.TempDir()
+	configFile := filepath.Join(tmpDir, "config.yml")
+	if err := os.WriteFile(configFile, []byte(content), 0o644); err != nil {
+		t.Fatalf("Failed to write temp config file: %v", err)
+	}
+
+	_, err := loadConfig(configFile)
+	if err == nil {
+		t.Fatalf("expected loadConfig to fail for empty venue_base_url")
+	}
+	if !strings.Contains(err.Error(), "venue_base_url") {
+		t.Fatalf("expected venue_base_url validation error, got: %v", err)
+	}
+}
+
+func TestResolveProviderName(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		want      string
+		expectErr bool
+	}{
+		{
+			name:      "defaults to wolt",
+			input:     "",
+			want:      providers.ProviderWolt,
+			expectErr: false,
+		},
+		{
+			name:      "accepts wolt",
+			input:     "wolt",
+			want:      providers.ProviderWolt,
+			expectErr: false,
+		},
+		{
+			name:      "accepts bolt",
+			input:     "BOLT",
+			want:      providers.ProviderBolt,
+			expectErr: false,
+		},
+		{
+			name:      "rejects unknown",
+			input:     "uber",
+			expectErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := providers.ResolveProviderName(tc.input)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatalf("expected error for input %q", tc.input)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected provider: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBoltProviderStub(t *testing.T) {
+	provider, err := providers.New(providers.ProviderBolt)
+	if err != nil {
+		t.Fatalf("providers.New failed: %v", err)
+	}
+
+	err = provider.Search(Config{Provider: providers.ProviderBolt}, "milk")
+	if err == nil {
+		t.Fatalf("expected bolt search to return stub error")
+	}
+	if !strings.Contains(err.Error(), providers.ProviderBolt) {
+		t.Fatalf("expected error to contain provider name %q, got %v", providers.ProviderBolt, err)
 	}
 }
 
@@ -187,7 +310,7 @@ func TestValidateAuthURL(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := validateAuthURL(tc.input)
+			got, err := wolt.ValidateAuthURL(tc.input)
 			if tc.expectErr {
 				if err == nil {
 					t.Fatalf("expected validation error for input %q", tc.input)
@@ -229,7 +352,7 @@ func TestExtractSearchProducts_BasicFields(t *testing.T) {
 		},
 	}
 
-	products := extractSearchProducts(response)
+	products := wolt.ExtractSearchProducts(response)
 	if len(products) != 1 {
 		t.Fatalf("expected 1 product, got %d", len(products))
 	}
@@ -276,7 +399,7 @@ func TestExtractSearchProducts_FallbackFromURL(t *testing.T) {
 		},
 	}
 
-	products := extractSearchProducts(response)
+	products := wolt.ExtractSearchProducts(response)
 	if len(products) != 1 {
 		t.Fatalf("expected 1 product, got %d", len(products))
 	}
@@ -314,7 +437,7 @@ func TestExtractSearchProducts_MissingIDStillReturnsProduct(t *testing.T) {
 		},
 	}
 
-	products := extractSearchProducts(response)
+	products := wolt.ExtractSearchProducts(response)
 	if len(products) != 1 {
 		t.Fatalf("expected 1 product, got %d", len(products))
 	}
@@ -361,12 +484,12 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 		},
 	}
 
-	products := extractSearchProducts(response)
+	products := wolt.ExtractSearchProducts(response)
 	if len(products) == 0 {
 		t.Fatalf("expected products from payload, got zero")
 	}
 
-	var matched *SearchProduct
+	var matched *wolt.SearchProduct
 	for i := range products {
 		if products[i].Name == "Selga šokolādes glazūrā 190g cepumi" {
 			matched = &products[i]
@@ -397,7 +520,7 @@ func TestExtractSearchProducts_RealPayloadMenuItemDetails(t *testing.T) {
 
 func TestBuildBasketAddURL(t *testing.T) {
 	cfg := Config{VenueBaseURL: "https://example.com/en/lva/riga"}
-	got := buildBasketAddURL(cfg, "market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
+	got := wolt.BuildBasketAddURL(cfg, "market-grizinkalna", "3135258a5f2ffa0c518ab4b8")
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("buildBasketAddURL returned invalid URL %q: %v", got, err)
@@ -416,7 +539,7 @@ func TestBuildBasketAddURL(t *testing.T) {
 
 func TestBuildCheckoutURL(t *testing.T) {
 	cfg := Config{VenueBaseURL: "https://example.com/en/lva/riga"}
-	got := buildCheckoutURL(cfg, "market-grizinkalna")
+	got := wolt.BuildCheckoutURL(cfg, "market-grizinkalna")
 	parsed, err := url.Parse(got)
 	if err != nil {
 		t.Fatalf("buildCheckoutURL returned invalid URL %q: %v", got, err)
@@ -434,7 +557,7 @@ func TestBuildCheckoutURL(t *testing.T) {
 }
 
 func TestBuildCheckoutCartItemSelector(t *testing.T) {
-	got := buildCheckoutCartItemSelector(`item-"abc"\value`)
+	got := wolt.BuildCheckoutCartItemSelector(`item-"abc"\value`)
 	want := `div[data-test-id="CartItem"][data-value="item-\"abc\"\\value"]`
 	if got != want {
 		t.Fatalf("unexpected checkout cart item selector: got %q want %q", got, want)
@@ -477,7 +600,7 @@ func TestIsBasketPageRequest(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := isBasketPageRequest(tc.method, tc.url)
+			got := wolt.IsBasketPageRequest(tc.method, tc.url)
 			if got != tc.wantMatch {
 				t.Fatalf("unexpected match: got %v want %v", got, tc.wantMatch)
 			}
@@ -511,7 +634,7 @@ func TestBasketRestoreModalWaitTimeout(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := basketRestoreModalWaitTimeout(tc.input)
+			got := wolt.BasketRestoreModalWaitTimeout(tc.input)
 			if got != tc.wantOut {
 				t.Fatalf("unexpected timeout clamp: got %v want %v", got, tc.wantOut)
 			}
@@ -545,7 +668,7 @@ func TestBasketCheckoutCartItemWaitTimeout(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := basketCheckoutCartItemWaitTimeout(tc.input)
+			got := wolt.BasketCheckoutCartItemWaitTimeout(tc.input)
 			if got != tc.wantOut {
 				t.Fatalf("unexpected checkout cart item timeout clamp: got %v want %v", got, tc.wantOut)
 			}
@@ -579,7 +702,7 @@ func TestUserStatusDropdownWaitTimeout(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := userStatusDropdownWaitTimeout(tc.input)
+			got := wolt.UserStatusDropdownWaitTimeout(tc.input)
 			if got != tc.wantOut {
 				t.Fatalf("unexpected timeout clamp: got %v want %v", got, tc.wantOut)
 			}
@@ -598,7 +721,7 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 		t.Fatalf("failed to unmarshal basket payload fixture: %v", err)
 	}
 
-	baskets := extractBasketOutputs(payload)
+	baskets := wolt.ExtractBasketOutputs(payload)
 	if len(baskets) != 1 {
 		t.Fatalf("expected 1 basket, got %d", len(baskets))
 	}
@@ -653,17 +776,17 @@ func TestExtractBasketOutputs_RealPayload(t *testing.T) {
 }
 
 func TestBasketContainsVenueItem(t *testing.T) {
-	baskets := []BasketOutput{
+	baskets := []wolt.BasketOutput{
 		{
 			VenueSlug: "market-grizinkalna",
-			Items: []BasketItemOutput{
+			Items: []wolt.BasketItemOutput{
 				{ID: "item-a"},
 				{ID: "item-b"},
 			},
 		},
 		{
 			VenueSlug: "market-agenskalna",
-			Items: []BasketItemOutput{
+			Items: []wolt.BasketItemOutput{
 				{ID: "item-a"},
 			},
 		},
@@ -710,7 +833,7 @@ func TestBasketContainsVenueItem(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := basketContainsVenueItem(baskets, tc.venueSlug, tc.itemID)
+			got := wolt.BasketContainsVenueItem(baskets, tc.venueSlug, tc.itemID)
 			if got != tc.want {
 				t.Fatalf("unexpected match result: got %v want %v", got, tc.want)
 			}
@@ -719,10 +842,10 @@ func TestBasketContainsVenueItem(t *testing.T) {
 }
 
 func TestBasketItemQuantityForVenue(t *testing.T) {
-	baskets := []BasketOutput{
+	baskets := []wolt.BasketOutput{
 		{
 			VenueSlug: "market-grizinkalna",
-			Items: []BasketItemOutput{
+			Items: []wolt.BasketItemOutput{
 				{ID: "item-a", Count: 2},
 				{ID: "item-a", Count: 1},
 				{ID: "item-b", Count: 4},
@@ -730,7 +853,7 @@ func TestBasketItemQuantityForVenue(t *testing.T) {
 		},
 		{
 			VenueSlug: "market-agenskalna",
-			Items: []BasketItemOutput{
+			Items: []wolt.BasketItemOutput{
 				{ID: "item-a", Count: 7},
 			},
 		},
@@ -771,7 +894,7 @@ func TestBasketItemQuantityForVenue(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := basketItemQuantityForVenue(baskets, tc.venueSlug, tc.itemID)
+			got := wolt.BasketItemQuantityForVenue(baskets, tc.venueSlug, tc.itemID)
 			if got != tc.want {
 				t.Fatalf("unexpected quantity result: got %d want %d", got, tc.want)
 			}
@@ -805,7 +928,7 @@ func TestIsRetryableRestoreModalClickError(t *testing.T) {
 	for _, tc := range tests {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			got := isRetryableRestoreModalClickError(tc.err)
+			got := wolt.IsRetryableRestoreModalClickError(tc.err)
 			if got != tc.retryable {
 				t.Fatalf("unexpected retryable result: got %v want %v", got, tc.retryable)
 			}
@@ -814,10 +937,10 @@ func TestIsRetryableRestoreModalClickError(t *testing.T) {
 }
 
 func TestIsPlaywrightTimeoutError(t *testing.T) {
-	if !isPlaywrightTimeoutError(errors.New("Timeout 30000ms exceeded")) {
+	if !wolt.IsPlaywrightTimeoutError(errors.New("Timeout 30000ms exceeded")) {
 		t.Fatalf("expected timeout detector to match timeout error")
 	}
-	if isPlaywrightTimeoutError(errors.New("some other failure")) {
+	if wolt.IsPlaywrightTimeoutError(errors.New("some other failure")) {
 		t.Fatalf("expected timeout detector to ignore non-timeout error")
 	}
 }

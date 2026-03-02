@@ -24,6 +24,7 @@ The application is configured via a `config.yml` file, which should be in the sa
 
 Example `config.yml`:
 ```yaml
+provider: "wolt"
 success_url_pattern: "https://wolt.com/en/discovery"
 success_selector: "[data-test-id='UserStatus.ProfileImage']"
 user_data_dir: "./profile/wolt"
@@ -32,7 +33,10 @@ headless: false
 timeout_seconds: 600
 ```
 
-`venue_base_url` controls geography-specific venue URL generation used by `basket add`, `basket remove`, and `checkout`. If omitted, it defaults to `https://wolt.com/en/lva/riga`.
+`venue_base_url` controls geography-specific venue URL generation used by `basket add`, `basket remove`, and `checkout`. It is required and must include scheme + host (for example, `https://wolt.com/en/lva/riga`).
+`provider` selects delivery service integration. Supported values:
+- `wolt` (default): full implementation.
+- `bolt`: stub provider (returns not-implemented errors for commands).
 
 ## Usage
 
@@ -61,7 +65,7 @@ Auth launch respects `headless` from `config.yml` while keeping the existing bro
 - `--erase-data`: Force deletion of existing session data before authenticating. Use this to start a fresh login session.
 
 Input requirement:
-- The sign-in URL entered in the prompt must be on `wolt.com` (including subdomains such as `www.wolt.com`).
+- For `provider: "wolt"`, the sign-in URL entered in the prompt must be on `wolt.com` (including subdomains such as `www.wolt.com`).
 - If not, auth fails with JSON status: `{"auth_status":"failed","error":"auth URL is incorrect: domain must be wolt.com"}`.
 
 **Examples:**

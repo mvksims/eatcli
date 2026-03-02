@@ -61,8 +61,12 @@ During initial development, several challenges were encountered, primarily revol
 -   **User Data Dir Safety Validation:** Config loading now rejects empty/root `user_data_dir`, and `auth --erase-data` refuses destructive targets such as filesystem root, home directory, and current working directory.
 -   **Stale Automation Path Cleanup:** Removed unused internal automation-only code paths and related tests (`runAutomation`, `waitAuthorized*`, and `runBasketItemAction`) to keep command behavior aligned with supported CLI surface.
 -   **Shared Browser Bootstrap Helper:** Added a common Playwright session launcher that centralizes persistent context startup, anti-detection init script, viewport setup, and request header routing across auth/search/basket/checkout flows.
--   **Configurable Geography Base:** Added optional `venue_base_url` configuration used by venue-scoped URL builders for `basket add`, `basket remove`, and `checkout` flows. Defaults to `https://wolt.com/en/lva/riga` when not configured.
+-   **Configurable Geography Base:** `venue_base_url` configuration is required and used by venue-scoped URL builders for `basket add`, `basket remove`, and `checkout` flows. Config loading fails fast when it is empty or invalid.
 -   **Integration Test Harness:** Added an `integration` build-tag test (`TestIntegrationHarness_SearchAddAddRemoveSameRetailer`) that runs search->add->add->remove flow against two queries while selecting products from the same venue and validating final basket state.
+-   **Provider Packages by Directory:** Provider resolution now lives in `internal/providers/` with concrete integrations split by provider directory: `internal/providers/wolt/` and `internal/providers/bolt/`. This keeps provider-specific logic isolated and scales better for additional services.
+-   **Direct Provider Wiring in App Layer:** `internal/app` now imports `internal/providers` directly for provider resolution/instantiation; the temporary `provider_bridge.go` indirection was removed for clearer ownership boundaries.
+-   **Codebase Directory Reorganization:** Root `main.go` remains a tiny launcher (`app.Main()`), CLI/config logic lives in `internal/app/`, shared config types/validation live in `internal/core/`, and test fixtures live in `internal/app/testdata/`.
+-   **Wolt Runtime Decomposition:** Wolt runtime is split into focused files under `internal/providers/wolt/` (`wolt_auth.go`, `wolt_search.go`, `wolt_basket.go`, `wolt_checkout.go`, `wolt_helpers.go`, `wolt_data_helpers.go`) plus provider/session adapter files (`provider.go`, `session.go`, `api.go`, `types.go`).
 
 ## Usage Notes for Agent
 

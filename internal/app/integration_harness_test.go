@@ -1,6 +1,6 @@
 //go:build integration
 
-package main
+package app
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"foodcli/internal/providers/wolt"
 )
 
 const (
@@ -17,22 +19,22 @@ const (
 )
 
 type harnessSearchResult struct {
-	Keyword  string          `json:"keyword"`
-	Count    int             `json:"count"`
-	Products []SearchProduct `json:"products"`
+	Keyword  string               `json:"keyword"`
+	Count    int                  `json:"count"`
+	Products []wolt.SearchProduct `json:"products"`
 }
 
 type harnessBasketActionResult struct {
-	Action    string         `json:"action"`
-	VenueSlug string         `json:"venue_slug"`
-	ItemID    string         `json:"item_id"`
-	Count     int            `json:"count"`
-	Baskets   []BasketOutput `json:"baskets"`
+	Action    string              `json:"action"`
+	VenueSlug string              `json:"venue_slug"`
+	ItemID    string              `json:"item_id"`
+	Count     int                 `json:"count"`
+	Baskets   []wolt.BasketOutput `json:"baskets"`
 }
 
 type harnessBasketViewResult struct {
-	Count   int            `json:"count"`
-	Baskets []BasketOutput `json:"baskets"`
+	Count   int                 `json:"count"`
+	Baskets []wolt.BasketOutput `json:"baskets"`
 }
 
 func TestIntegrationHarness_SearchAddAddRemoveSameRetailer(t *testing.T) {
@@ -94,12 +96,12 @@ func TestIntegrationHarness_SearchAddAddRemoveSameRetailer(t *testing.T) {
 		t.Fatalf("basket view failed: %v", err)
 	}
 
-	remainingFirst := basketItemQuantityForVenue(view.Baskets, venueSlug, productOne.ID)
+	remainingFirst := wolt.BasketItemQuantityForVenue(view.Baskets, venueSlug, productOne.ID)
 	if remainingFirst != 0 {
 		t.Fatalf("expected first product %q to be removed from venue %q, remaining quantity=%d", productOne.ID, venueSlug, remainingFirst)
 	}
 
-	remainingSecond := basketItemQuantityForVenue(view.Baskets, venueSlug, productTwo.ID)
+	remainingSecond := wolt.BasketItemQuantityForVenue(view.Baskets, venueSlug, productTwo.ID)
 	if remainingSecond <= 0 {
 		t.Fatalf("expected second product %q to remain in venue %q basket, quantity=%d", productTwo.ID, venueSlug, remainingSecond)
 	}
@@ -108,7 +110,7 @@ func TestIntegrationHarness_SearchAddAddRemoveSameRetailer(t *testing.T) {
 func runHarnessSearch(cfg Config, query string) (harnessSearchResult, error) {
 	var result harnessSearchResult
 	output, err := captureCommandOutput(func() error {
-		return runSearch(cfg, query)
+		return wolt.RunSearch(cfg, query)
 	})
 	if err != nil {
 		return result, err
@@ -122,7 +124,7 @@ func runHarnessSearch(cfg Config, query string) (harnessSearchResult, error) {
 func runHarnessBasketAdd(cfg Config, venueSlug, itemID string) (harnessBasketActionResult, error) {
 	var result harnessBasketActionResult
 	output, err := captureCommandOutput(func() error {
-		return runBasketAdd(cfg, venueSlug, itemID)
+		return wolt.RunBasketAdd(cfg, venueSlug, itemID)
 	})
 	if err != nil {
 		return result, err
@@ -136,7 +138,7 @@ func runHarnessBasketAdd(cfg Config, venueSlug, itemID string) (harnessBasketAct
 func runHarnessBasketRemove(cfg Config, venueSlug, itemID string) (harnessBasketActionResult, error) {
 	var result harnessBasketActionResult
 	output, err := captureCommandOutput(func() error {
-		return runBasketRemove(cfg, venueSlug, itemID)
+		return wolt.RunBasketRemove(cfg, venueSlug, itemID)
 	})
 	if err != nil {
 		return result, err
@@ -150,7 +152,7 @@ func runHarnessBasketRemove(cfg Config, venueSlug, itemID string) (harnessBasket
 func runHarnessBasketView(cfg Config) (harnessBasketViewResult, error) {
 	var result harnessBasketViewResult
 	output, err := captureCommandOutput(func() error {
-		return runBasket(cfg)
+		return wolt.RunBasket(cfg)
 	})
 	if err != nil {
 		return result, err
@@ -161,7 +163,7 @@ func runHarnessBasketView(cfg Config) (harnessBasketViewResult, error) {
 	return result, nil
 }
 
-func pickProductsFromSameVenue(first, second []SearchProduct) (SearchProduct, SearchProduct, bool) {
+func pickProductsFromSameVenue(first, second []wolt.SearchProduct) (wolt.SearchProduct, wolt.SearchProduct, bool) {
 	for _, one := range first {
 		oneID := strings.TrimSpace(one.ID)
 		oneVenue := strings.TrimSpace(one.VenueSlug)
@@ -181,7 +183,7 @@ func pickProductsFromSameVenue(first, second []SearchProduct) (SearchProduct, Se
 		}
 	}
 
-	return SearchProduct{}, SearchProduct{}, false
+	return wolt.SearchProduct{}, wolt.SearchProduct{}, false
 }
 
 func envOrDefault(key, fallback string) string {
