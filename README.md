@@ -1,4 +1,4 @@
-# Go Playwright Authentication CLI
+# EAT CLI
 
 This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, `basket remove` to remove items from basket, and `checkout` to attempt order placement and surface checkout errors.
 
@@ -158,3 +158,31 @@ After attempting checkout, it waits up to 10 seconds for `GenericCheckoutErrorMo
 ```bash
 go run main.go checkout wolt-market-grizinkalna
 ```
+
+## Integration Harness
+
+An end-to-end harness is available as an integration test with build tag `integration`.
+
+Scenario covered:
+1. Search for product query #1.
+2. Search for product query #2.
+3. Pick two products from the same venue.
+4. Add product #1 to basket.
+5. Add product #2 to basket.
+6. Remove product #1 from basket.
+7. Verify product #1 is gone and product #2 remains in that venue basket.
+
+Run it with:
+```bash
+EATCLI_E2E=1 \
+EATCLI_E2E_CONFIG=config.yml \
+EATCLI_E2E_QUERY_ONE=milk \
+EATCLI_E2E_QUERY_TWO=bread \
+go test -tags integration -run TestIntegrationHarness_SearchAddAddRemoveSameRetailer -v
+```
+
+Environment variables:
+- `EATCLI_E2E` (required): set to `1` to enable the harness test.
+- `EATCLI_E2E_CONFIG` (optional): config path, defaults to `config.yml`.
+- `EATCLI_E2E_QUERY_ONE` (optional): first search query, defaults to `milk`.
+- `EATCLI_E2E_QUERY_TWO` (optional): second search query, defaults to `bread`.
