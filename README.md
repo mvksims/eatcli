@@ -68,19 +68,19 @@ go run main.go <command> [options] [config.yml] [args...]
 
 ### `auth` Command
 
-This command is your one-time sign-in step. It stores your session in `user_data_dir` so shopping commands can reuse it without requiring login each time.
-Before reporting success, it verifies `[data-test-id="UserStatusDropdown"]`. If that marker is not visible, `auth` returns a failure instead of persisting a successful result.
-Final command output is a simple JSON object with auth status:
+Use this one-time sign-in command to create or refresh a reusable session in `user_data_dir`.
+
+Expected result:
+- On success, the command prints `{"auth_status":"success"}` and later commands can run without signing in again.
+- On failure, the command prints `{"auth_status":"failed","error":"..."}` and no usable session is saved.
+
+Final command output is a JSON object with auth status:
 - Success: `{"auth_status":"success"}`
 - Failure: `{"auth_status":"failed","error":"..."}`
-Auth launch respects `headless` from `config.yml` while keeping the existing browser automation steps.
+Auth launch respects `headless` from `config.yml`.
 
 **Options:**
 - `--erase-data`: Force deletion of existing session data before authenticating. Use this to start a fresh login session.
-
-Input requirement:
-- For `provider: "wolt"`, the sign-in URL entered in the prompt must be on `wolt.com` (including subdomains such as `www.wolt.com`).
-- If not, auth fails with JSON status: `{"auth_status":"failed","error":"auth URL is incorrect: domain must be wolt.com"}`.
 
 **Examples:**
 ```bash
@@ -90,18 +90,18 @@ go run main.go auth --erase-data
 
 ### `search` Command
 
-This command searches for items on Wolt and returns a JSON summary including the keyword, total count, and a `products` list. Each product includes `id`, `name`, `price`, `venue_id`, and `venue_slug`.
+This command searches for items and returns a JSON summary including the keyword, total count, and a `products` list. Each product includes `id`, `name`, `price`, `venue_id`, and `venue_slug`.
 
 **Example:**
 ```bash
-go run main.go search potato
+go run main.go search selga
 go run main.go search peeled tomatoes
 ```
 
 Example output shape:
 ```json
 {
-  "keyword": "potato",
+  "keyword": "selga",
   "count": 2,
   "products": [
     {
@@ -118,7 +118,10 @@ Example output shape:
 ### `basket` Command
 
 This command returns your current basket as JSON.
-After the initial page load, it verifies `[data-test-id="UserStatusDropdown"]`; if missing, it treats the session as logged out and asks you to run `auth` first.
+
+Expected result:
+- On success, it prints a normalized basket payload.
+- If there is no valid authenticated session, it returns an error asking you to run `auth` first.
 
 Output contains a `baskets` array. Each basket includes:
 - `id`
@@ -133,13 +136,12 @@ go run main.go basket
 
 ### `basket add` Command
 
-This command increases quantity for a specific item in your basket and prints the resulting basket state as JSON.
+This command adds an item to a specific venue basket, or increments quantity if the item is already there.
 
-Flow:
-- It first checks basket state and looks for the requested item ID inside the same venue basket.
-- It verifies login status after initial page loads using `[data-test-id="UserStatusDropdown"]`; if missing, it stops and asks you to run `auth` first.
-- If the item is already in that venue basket, it opens checkout and increments from the cart item modal.
-- If the item is not in cart, it opens the item detail page, optionally confirms `restore-order-modal.confirm` when shown, then clicks `product-modal.submit`, waits for refreshed baskets API response, and prints normalized basket JSON.
+Expected result:
+- On success, it prints the updated basket JSON.
+- If the session is not authenticated, it returns an error asking you to run `auth`.
+- If the venue/item input is invalid, it returns an error.
 
 Output uses the same `baskets` shape as `basket`.
 
@@ -152,13 +154,10 @@ go run main.go basket add wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 
 This command removes a specific item from the selected venue basket and prints the resulting basket state as JSON.
 
-Flow:
-- It first checks basket state and confirms the requested item ID exists in the same venue basket.
-- It verifies login status after initial page loads using `[data-test-id="UserStatusDropdown"]`; if missing, it stops and asks you to run `auth` first.
-- It reads the current item quantity from basket data.
-- After checkout loads, it checks if `SendOrderButton` is visible; if not, it optionally confirms `restore-order-modal.confirm`, clicks `cart-view-button` when shown, then clicks `CartViewNextStepButton`, and waits for checkout readiness.
-- It opens checkout, opens the cart item modal, clicks `product-modal.quantity.decrement` the same number of times as the current quantity, then clicks `product-modal.submit`.
-- It waits for updated baskets API response and prints normalized `baskets` output.
+Expected result:
+- On success, the target item is removed from that venue basket and updated basket JSON is printed.
+- If the item is not present in that venue basket, it returns an error.
+- If the session is not authenticated, it returns an error asking you to run `auth`.
 
 **Example:**
 ```bash
@@ -167,10 +166,12 @@ go run main.go basket remove wolt-market-grizinkalna 3135258a5f2ffa0c518ab4b8
 
 ### `checkout` Command
 
-This command attempts to place the order for a venue by triggering the send-order action.
-After the initial page load, it verifies `[data-test-id="UserStatusDropdown"]`; if missing, it treats the session as logged out and asks you to run `auth` first.
+This command attempts to place an order for a selected venue.
 
-After attempting checkout, it waits up to 10 seconds for `GenericCheckoutErrorModal`. If it appears, the command returns the modal message in `generic_checkout_error_modal`.
+Expected result:
+- On success, the order is submitted.
+- If checkout cannot be completed, the command returns an error payload with available provider error details.
+- If the session is not authenticated, it returns an error asking you to run `auth` first.
 
 **Example:**
 ```bash
