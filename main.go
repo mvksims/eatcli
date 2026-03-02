@@ -443,6 +443,196 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  checkout <venue_slug> Attempts order placement and reports checkout errors when present.")
 }
 
+func closeSession(pw *playwright.Playwright, ctx playwright.BrowserContext) {
+	if ctx != nil {
+		_ = ctx.Close()
+	}
+	if pw != nil {
+		_ = pw.Stop()
+	}
+}
+
+func closeSessionWithWarnings(pw *playwright.Playwright, ctx playwright.BrowserContext) {
+	if ctx != nil {
+		if err := ctx.Close(); err != nil {
+			log.Printf("Warning: Could not close browser context: %v", err)
+		}
+	}
+	if pw != nil {
+		if err := pw.Stop(); err != nil {
+			log.Printf("Warning: Could not stop playwright: %v", err)
+		}
+	}
+}
+
+func launchInteractiveSession(cfg Config) (*playwright.Playwright, playwright.BrowserContext, playwright.Page, error) {
+	return launchPersistentSession(cfg, browserSessionOptions{
+		headless:         false,
+		ensureProfileDir: true,
+	})
+}
+
+func waitForPageLoadState(page playwright.Page, state *playwright.LoadState, timeout time.Duration) error {
+	return page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   state,
+		Timeout: playwright.Float(float64(timeout.Milliseconds())),
+	})
+}
+
+func gotoAndWaitForPageLoad(page playwright.Page, targetURL string, timeout time.Duration, gotoErrPrefix, loadErrPrefix string) error {
+	if _, err := page.Goto(targetURL); err != nil {
+		return fmt.Errorf("%s: %w", gotoErrPrefix, err)
+	}
+
+	if err := waitForPageLoadState(page, playwright.LoadStateLoad, timeout); err != nil {
+		return fmt.Errorf("%s: %w", loadErrPrefix, err)
+	}
+
+	return nil
+}
+
+func gotoWaitLoadAndEnsureUserAuthorized(page playwright.Page, targetURL string, timeout time.Duration, gotoErrPrefix, loadErrPrefix string) error {
+	if err := gotoAndWaitForPageLoad(page, targetURL, timeout, gotoErrPrefix, loadErrPrefix); err != nil {
+		return err
+	}
+	return ensureUserAuthorized(page, timeout)
+}
+
+func basketCaptureTargetURL(cfg Config) string {
+	if cfg.SuccessURLPattern != "" {
+		return cfg.SuccessURLPattern
+	}
+	return defaultBasketCaptureURL
+}
+
+func clickFirstLocatorWithRetry(page playwright.Page, selector string, attempts int, timeout time.Duration, onRetry func(int, error)) error {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if timeout <= 0 {
+		timeout = 3 * time.Second
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		locator := page.Locator(selector).Nth(0)
+		err := locator.Click(playwright.LocatorClickOptions{
+			Timeout: playwright.Float(float64(timeout.Milliseconds())),
+		})
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if attempt == attempts {
+			break
+		}
+		if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
+			if onRetry != nil {
+				onRetry(attempt, err)
+			}
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		return err
+	}
+
+	return lastErr
+}
+
+func wrapClickError(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
+		return fmt.Errorf("%s after retries: %w", message, err)
+	}
+	return fmt.Errorf("%s: %w", message, err)
+}
+
+func waitForVisibleLocator(locator playwright.Locator, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return locator.WaitFor(playwright.LocatorWaitForOptions{
+		State:   playwright.WaitForSelectorStateVisible,
+		Timeout: playwright.Float(float64(timeout.Milliseconds())),
+	})
+}
+
+func waitForFirstVisibleLocator(page playwright.Page, selector string, timeout time.Duration) (playwright.Locator, error) {
+	locator := page.Locator(selector).Nth(0)
+	if err := waitForVisibleLocator(locator, timeout); err != nil {
+		return nil, err
+	}
+	return locator, nil
+}
+
+func waitForFirstVisibleLocatorWithMessage(page playwright.Page, selector string, timeout time.Duration, message string) (playwright.Locator, error) {
+	locator, err := waitForFirstVisibleLocator(page, selector, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", message, err)
+	}
+	return locator, nil
+}
+
+func clickLocatorWithMessage(locator playwright.Locator, message string) error {
+	if err := locator.Click(); err != nil {
+		return fmt.Errorf("%s: %w", message, err)
+	}
+	return nil
+}
+
+func openBasketCheckoutPage(cfg Config, venueSlug, flowLabel string) (*playwright.Playwright, playwright.BrowserContext, playwright.Page, <-chan basketResponseEvent, error) {
+	targetURL := buildCheckoutURL(cfg, venueSlug)
+	fmt.Printf("Opening checkout page for basket %s: %s\n", flowLabel, targetURL)
+
+	pw, ctx, page, err := launchInteractiveSession(cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	resChan := attachBasketResponseCapture(page)
+
+	if err := gotoWaitLoadAndEnsureUserAuthorized(
+		page,
+		targetURL,
+		cfg.Timeout,
+		"could not go to checkout URL",
+		"checkout page did not fully load",
+	); err != nil {
+		closeSession(pw, ctx)
+		return nil, nil, nil, nil, err
+	}
+
+	return pw, ctx, page, resChan, nil
+}
+
+func ensureCheckoutCartItemPresent(page playwright.Page, itemID string, timeout time.Duration) (string, error) {
+	cartItemSelector := buildCheckoutCartItemSelector(itemID)
+	hasCartItem, err := waitForCheckoutCartItem(page, cartItemSelector, basketCheckoutCartItemWaitTimeout(timeout))
+	if err != nil {
+		return "", err
+	}
+	if !hasCartItem {
+		return "", fmt.Errorf("item '%s' was found in basket pre-check but not found on checkout page", itemID)
+	}
+	return cartItemSelector, nil
+}
+
+func openCheckoutCartItemModal(page playwright.Page, cartItemSelector, itemID string, timeout time.Duration) error {
+	cartItemButton := page.Locator(cartItemSelector).Nth(0).Locator("button").Nth(0)
+
+	if err := waitForVisibleLocator(cartItemButton, timeout); err != nil {
+		return fmt.Errorf("could not find cart item button for '%s': %w", itemID, err)
+	}
+
+	if err := clickLocatorWithMessage(cartItemButton, fmt.Sprintf("could not click cart item button for '%s'", itemID)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func runAuth(cfg Config, eraseData bool, authURL string) error {
 	if eraseData {
 		if err := validateEraseUserDataDir(cfg.UserDataDir); err != nil {
@@ -460,22 +650,13 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := ctx.Close(); err != nil {
-			log.Printf("Warning: Could not close browser context: %v", err)
-		}
-	}()
-	defer func() {
-		if err := pw.Stop(); err != nil {
-			log.Printf("Warning: Could not stop playwright: %v", err)
-		}
-	}()
+	defer closeSessionWithWarnings(pw, ctx)
 	if _, err = page.Goto(authURL); err != nil {
 		return fmt.Errorf("could not go to auth URL: %w", err)
 	}
 
 	// Wait for the page to be fully loaded (including network idle)
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
+	if err := waitForPageLoadState(page, playwright.LoadStateNetworkidle, cfg.Timeout); err != nil {
 		return fmt.Errorf("failed to wait for page network idle: %w", err)
 	}
 
@@ -483,18 +664,15 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	_ = simulateHumanBehavior(page)
 
 	// Wait for the page to be fully loaded (including network idle) after potential redirects/JS execution
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
+	if err := waitForPageLoadState(page, playwright.LoadStateNetworkidle, cfg.Timeout); err != nil {
 		return fmt.Errorf("failed to wait for page network idle after human simulation: %w", err)
 	}
 
 	// Attempt to click the "Use only necessary" button first, if it exists
 	useNecessaryButtonLocator := page.Locator("text=Use only necessary").Nth(0)
-	if err := useNecessaryButtonLocator.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(10000), // Shorter timeout for this button
-	}); err == nil {
+	if err := waitForVisibleLocator(useNecessaryButtonLocator, 10*time.Second); err == nil {
 		if err := useNecessaryButtonLocator.Click(); err == nil {
-			if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
+			if err := waitForPageLoadState(page, playwright.LoadStateNetworkidle, cfg.Timeout); err != nil {
 				// Non-critical wait; continue flow.
 			}
 		}
@@ -503,13 +681,10 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 	// Click the decline button first, if it exists
 	declineButtonSelector := "[data-test-id=\"decline-button\"]"
 	declineButtonLocator := page.Locator(declineButtonSelector).Nth(0)
-	if err := declineButtonLocator.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(10000), // Shorter timeout for decline button, as it might not always exist
-	}); err == nil {
+	if err := waitForVisibleLocator(declineButtonLocator, 10*time.Second); err == nil {
 		if err := declineButtonLocator.Click(); err == nil {
 			// Wait for page to settle after click
-			if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{State: playwright.LoadStateNetworkidle, Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds()))}); err != nil {
+			if err := waitForPageLoadState(page, playwright.LoadStateNetworkidle, cfg.Timeout); err != nil {
 				// Non-critical wait; continue flow.
 			}
 		}
@@ -517,15 +692,17 @@ func runAuth(cfg Config, eraseData bool, authURL string) error {
 
 	// Find the confirm button and click it
 	confirmButtonSelector := "[data-test-id=\"magic-login-landing.confirm\"]"
-	confirmButton, err := page.WaitForSelector(confirmButtonSelector, playwright.PageWaitForSelectorOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	})
+	confirmButton, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		confirmButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find or wait for confirm button '%s'", confirmButtonSelector),
+	)
 	if err != nil {
-		return fmt.Errorf("could not find or wait for confirm button '%s': %w", confirmButtonSelector, err)
+		return err
 	}
-	if err := confirmButton.Click(); err != nil {
-		return fmt.Errorf("could not click confirm button '%s': %w", confirmButtonSelector, err)
+	if err := clickLocatorWithMessage(confirmButton, fmt.Sprintf("could not click confirm button '%s'", confirmButtonSelector)); err != nil {
+		return err
 	}
 
 	// Wait for the page to reload into the success URL
@@ -555,8 +732,7 @@ func runSearch(cfg Config, query string) error {
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
+	defer closeSession(pw, ctx)
 
 	searchURL := fmt.Sprintf("https://wolt.com/en/search?q=%s&target=items&filters=delivers_now%%3Ddelivers_now_toggle", url.QueryEscape(query))
 
@@ -662,27 +838,19 @@ func runBasket(cfg Config) error {
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
+	defer closeSession(pw, ctx)
 
 	resChan := attachBasketResponseCapture(page)
 	requestStartedAt := time.Now()
-	targetURL := defaultBasketCaptureURL
-	if cfg.SuccessURLPattern != "" {
-		targetURL = cfg.SuccessURLPattern
-	}
+	targetURL := basketCaptureTargetURL(cfg)
 
-	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to basket page: %w", err)
-	}
-
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("basket page did not fully load: %w", err)
-	}
-	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+	if err := gotoWaitLoadAndEnsureUserAuthorized(
+		page,
+		targetURL,
+		cfg.Timeout,
+		"could not go to basket page",
+		"basket page did not fully load",
+	); err != nil {
 		return err
 	}
 
@@ -707,172 +875,99 @@ func runBasket(cfg Config) error {
 }
 
 func runBasketAdd(cfg Config, venueSlug, itemID string) error {
-	basketAddDebugf("before: start add flow (venue_slug=%s item_id=%s)", venueSlug, itemID)
-	basketAddDebugf("before: pre-check basket contents for venue/item")
 	itemAlreadyInVenueBasket, err := isBasketItemPresentForVenue(cfg, venueSlug, itemID)
 	if err != nil {
-		basketAddDebugf("after: basket pre-check failed: %v", err)
 		return err
 	}
-	basketAddDebugf("after: basket pre-check completed (present=%t)", itemAlreadyInVenueBasket)
 
 	if itemAlreadyInVenueBasket {
-		basketAddDebugf("before: route to checkout increment flow")
 		if err := runBasketAddFromCheckout(cfg, venueSlug, itemID); err != nil {
-			basketAddDebugf("after: checkout increment flow failed: %v", err)
 			return err
 		}
-		basketAddDebugf("after: checkout increment flow completed")
 		return nil
 	}
 
-	basketAddDebugf("before: route to direct item-page add flow")
 	if err := runBasketAddFromProductDetail(cfg, venueSlug, itemID); err != nil {
-		basketAddDebugf("after: direct item-page add flow failed: %v", err)
 		return err
 	}
-	basketAddDebugf("after: direct item-page add flow completed")
 	return nil
 }
 
 func runBasketAddFromProductDetail(cfg Config, venueSlug, itemID string) error {
 	targetURL := buildBasketAddURL(cfg, venueSlug, itemID)
-	basketAddDebugf("before: prepare product detail URL")
 	fmt.Printf("Opening basket add page: %s\n", targetURL)
-	basketAddDebugf("after: product detail URL ready")
 
-	basketAddDebugf("before: launch browser session for product detail add flow")
-	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
-		headless:         false, // Always interactive for basket actions
-		ensureProfileDir: true,
-	})
+	pw, ctx, page, err := launchInteractiveSession(cfg)
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
-	basketAddDebugf("after: browser session launched for product detail add flow")
+	defer closeSession(pw, ctx)
 
-	basketAddDebugf("before: attach basket API response capture")
 	resChan := attachBasketResponseCapture(page)
-	basketAddDebugf("after: basket API response capture attached")
 
-	basketAddDebugf("before: navigate to product detail page")
-	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to basket add URL: %w", err)
-	}
-	basketAddDebugf("after: product detail page navigation completed")
-
-	basketAddDebugf("before: wait for product detail page load state")
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("basket add page did not fully load: %w", err)
-	}
-	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+	if err := gotoWaitLoadAndEnsureUserAuthorized(
+		page,
+		targetURL,
+		cfg.Timeout,
+		"could not go to basket add URL",
+		"basket add page did not fully load",
+	); err != nil {
 		return err
 	}
-	basketAddDebugf("after: product detail page fully loaded")
 
-	restoreSelector := `[data-test-id="restore-order-modal.confirm"]`
-	basketAddDebugf("before: check optional restore-order confirm button (%s)", restoreSelector)
-	clickedRestore, err := maybeConfirmRestoreOrderModal(page, cfg.Timeout)
+	_, err = maybeConfirmRestoreOrderModal(page, cfg.Timeout)
 	if err != nil {
 		return err
-	}
-	if clickedRestore {
-		basketAddDebugf("after: optional restore-order confirm button clicked")
-	} else {
-		basketAddDebugf("after: optional restore-order confirm button not visible; continuing")
 	}
 
 	submitSelector := `[data-test-id="product-modal.submit"]`
-	submitButton := page.Locator(submitSelector).Nth(0)
-	basketAddDebugf("before: wait for submit button (%s)", submitSelector)
-	if err := submitButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find submit button '%s': %w", submitSelector, err)
+	if _, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		submitSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find submit button '%s'", submitSelector),
+	); err != nil {
+		return err
 	}
-	basketAddDebugf("after: submit button is visible")
 
-	basketAddDebugf("before: click submit button")
 	clickStartedAt := time.Now()
-	clickedSubmit := false
-	for attempt := 1; attempt <= 3; attempt++ {
-		submitButton = page.Locator(submitSelector).Nth(0)
-		if err := submitButton.Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(3000),
-		}); err != nil {
-			if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
-				basketAddDebugf("after: submit click retry needed (attempt %d): %v", attempt, err)
-				time.Sleep(150 * time.Millisecond)
-				continue
-			}
-			return fmt.Errorf("could not click submit button '%s': %w", submitSelector, err)
-		}
-		clickedSubmit = true
-		break
+	if err := clickFirstLocatorWithRetry(page, submitSelector, 3, 3*time.Second, nil); err != nil {
+		return wrapClickError(fmt.Sprintf("could not click submit button '%s'", submitSelector), err)
 	}
-	if !clickedSubmit {
-		return fmt.Errorf("could not click submit button '%s' after retries", submitSelector)
-	}
-	basketAddDebugf("after: submit button clicked")
 
-	basketAddDebugf("before: wait for baskets API response after submit click")
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
 	if err != nil {
 		return err
 	}
-	basketAddDebugf("after: baskets API response received after submit click (status=%d)", basketRes.Status)
 
-	basketAddDebugf("before: print basket add result JSON")
 	printBasketActionResult("add", venueSlug, itemID, basketRes)
-	basketAddDebugf("after: basket add result JSON printed")
 	return nil
 }
 
 func runBasketRemove(cfg Config, venueSlug, itemID string) error {
-	basketRemoveDebugf("before: start remove flow (venue_slug=%s item_id=%s)", venueSlug, itemID)
-	basketRemoveDebugf("before: pre-check basket contents for venue/item")
-
-	quantity, err := getBasketItemQuantityForVenue(cfg, venueSlug, itemID, basketRemoveDebugf)
+	quantity, err := getBasketItemQuantityForVenue(cfg, venueSlug, itemID)
 	if err != nil {
-		basketRemoveDebugf("after: basket pre-check failed: %v", err)
 		return err
 	}
-	basketRemoveDebugf("after: basket pre-check completed (quantity=%d)", quantity)
 	if quantity <= 0 {
 		return fmt.Errorf("item '%s' is not present in basket for venue '%s'", itemID, venueSlug)
 	}
 
-	basketRemoveDebugf("before: route to checkout remove flow")
 	if err := runBasketRemoveFromCheckout(cfg, venueSlug, itemID, quantity); err != nil {
-		basketRemoveDebugf("after: checkout remove flow failed: %v", err)
 		return err
 	}
-	basketRemoveDebugf("after: checkout remove flow completed")
 	return nil
 }
 
 func isBasketItemPresentForVenue(cfg Config, venueSlug, itemID string) (bool, error) {
-	quantity, err := getBasketItemQuantityForVenue(cfg, venueSlug, itemID, basketAddDebugf)
+	quantity, err := getBasketItemQuantityForVenue(cfg, venueSlug, itemID)
 	if err != nil {
 		return false, err
 	}
 	return quantity > 0, nil
 }
 
-func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string, debugf func(string, ...interface{})) (int, error) {
-	debug := func(format string, args ...interface{}) {
-		if debugf != nil {
-			debugf(format, args...)
-		}
-	}
-
-	debug("before: launch browser session for basket pre-check")
+func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string) (int, error) {
 	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
 		headless:               cfg.Headless,
 		requireExistingProfile: true,
@@ -880,314 +975,158 @@ func getBasketItemQuantityForVenue(cfg Config, venueSlug, itemID string, debugf 
 	if err != nil {
 		return 0, err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
-	debug("after: browser session launched for basket pre-check")
+	defer closeSession(pw, ctx)
 
-	debug("before: attach basket API response capture for basket pre-check")
 	resChan := attachBasketResponseCapture(page)
-	debug("after: basket API response capture attached for basket pre-check")
 
-	targetURL := defaultBasketCaptureURL
-	if cfg.SuccessURLPattern != "" {
-		targetURL = cfg.SuccessURLPattern
-	}
-	debug("before: navigate for basket pre-check (url=%s)", targetURL)
+	targetURL := basketCaptureTargetURL(cfg)
 	requestStartedAt := time.Now()
-	if _, err := page.Goto(targetURL); err != nil {
-		return 0, fmt.Errorf("could not go to basket pre-check page: %w", err)
+	if err := gotoAndWaitForPageLoad(
+		page,
+		targetURL,
+		cfg.Timeout,
+		"could not go to basket pre-check page",
+		"basket pre-check page did not fully load",
+	); err != nil {
+		return 0, err
 	}
-	debug("after: navigation completed for basket pre-check")
-
-	debug("before: wait for load state in basket pre-check")
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return 0, fmt.Errorf("basket pre-check page did not fully load: %w", err)
-	}
-	debug("after: load state reached in basket pre-check")
-	debug("before: verify login status in basket pre-check")
 	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
 		return 0, err
 	}
-	debug("after: login status confirmed in basket pre-check")
 
-	debug("before: wait for baskets API response in basket pre-check")
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, requestStartedAt)
 	if err != nil {
 		return 0, err
 	}
-	debug("after: baskets API response received in basket pre-check (status=%d)", basketRes.Status)
 
 	baskets := extractBasketOutputs(basketRes.JSON)
 	quantity := basketItemQuantityForVenue(baskets, venueSlug, itemID)
-	debug("after: basket contents inspected (venue_slug=%s item_id=%s quantity=%d)", venueSlug, itemID, quantity)
 	return quantity, nil
 }
 
 func runBasketAddFromCheckout(cfg Config, venueSlug, itemID string) error {
-	targetURL := buildCheckoutURL(cfg, venueSlug)
-	basketAddDebugf("before: prepare checkout increment URL")
-	fmt.Printf("Opening checkout page for basket add: %s\n", targetURL)
-	basketAddDebugf("after: checkout increment URL ready")
-
-	basketAddDebugf("before: launch browser session for checkout increment flow")
-	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
-		headless:         false, // Always interactive for basket actions
-		ensureProfileDir: true,
-	})
+	pw, ctx, page, resChan, err := openBasketCheckoutPage(cfg, venueSlug, "add")
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
-	basketAddDebugf("after: browser session launched for checkout increment flow")
+	defer closeSession(pw, ctx)
 
-	basketAddDebugf("before: attach basket API response capture")
-	resChan := attachBasketResponseCapture(page)
-	basketAddDebugf("after: basket API response capture attached")
-
-	basketAddDebugf("before: navigate to checkout page")
-	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to checkout URL: %w", err)
-	}
-	basketAddDebugf("after: checkout page navigation completed")
-
-	basketAddDebugf("before: wait for checkout page load state")
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("checkout page did not fully load: %w", err)
-	}
-	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
-		return err
-	}
-	basketAddDebugf("after: checkout page fully loaded")
-
-	cartItemSelector := buildCheckoutCartItemSelector(itemID)
-	basketAddDebugf("before: check if cart item exists using selector %s", cartItemSelector)
-	hasCartItem, err := waitForCheckoutCartItem(page, cartItemSelector, basketCheckoutCartItemWaitTimeout(cfg.Timeout))
+	cartItemSelector, err := ensureCheckoutCartItemPresent(page, itemID, cfg.Timeout)
 	if err != nil {
 		return err
-	}
-	basketAddDebugf("after: cart item existence check completed (exists=%t)", hasCartItem)
-	if !hasCartItem {
-		return fmt.Errorf("item '%s' was found in basket pre-check but not found on checkout page", itemID)
 	}
 	fmt.Printf("Item %s is in basket. Using checkout flow for increment.\n", itemID)
 
-	cartItemButton := page.Locator(cartItemSelector).Nth(0).Locator("button").Nth(0)
-	basketAddDebugf("before: wait for cart item button")
-	if err := cartItemButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find cart item button for '%s': %w", itemID, err)
+	if err := openCheckoutCartItemModal(page, cartItemSelector, itemID, cfg.Timeout); err != nil {
+		return err
 	}
-	basketAddDebugf("after: cart item button is visible")
-
-	basketAddDebugf("before: click cart item button")
-	if err := cartItemButton.Click(); err != nil {
-		return fmt.Errorf("could not click cart item button for '%s': %w", itemID, err)
-	}
-	basketAddDebugf("after: cart item button clicked")
 
 	addButtonSelector := `[data-test-id="product-modal.total-price"]`
-	addButton := page.Locator(addButtonSelector).Nth(0)
-	basketAddDebugf("before: wait for add button in modal")
-	if err := addButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find basket add button '%s' after cart item selection: %w", addButtonSelector, err)
+	addButton, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		addButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find basket add button '%s' after cart item selection", addButtonSelector),
+	)
+	if err != nil {
+		return err
 	}
-	basketAddDebugf("after: add button in modal is visible")
 
 	incrementButtonSelector := `[data-test-id="product-modal.quantity.increment"]`
-	incrementButton := page.Locator(incrementButtonSelector).Nth(0)
-	basketAddDebugf("before: wait for quantity increment button in modal")
-	if err := incrementButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find quantity increment button '%s' in modal: %w", incrementButtonSelector, err)
+	incrementButton, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		incrementButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find quantity increment button '%s' in modal", incrementButtonSelector),
+	)
+	if err != nil {
+		return err
 	}
-	basketAddDebugf("after: quantity increment button in modal is visible")
 
-	basketAddDebugf("before: click quantity increment button in modal")
-	if err := incrementButton.Click(); err != nil {
-		return fmt.Errorf("could not click quantity increment button '%s' in modal: %w", incrementButtonSelector, err)
+	if err := clickLocatorWithMessage(
+		incrementButton,
+		fmt.Sprintf("could not click quantity increment button '%s' in modal", incrementButtonSelector),
+	); err != nil {
+		return err
 	}
-	basketAddDebugf("after: quantity increment button in modal clicked")
 
-	basketAddDebugf("before: click add button in modal")
 	clickStartedAt := time.Now()
-	if err := addButton.Click(); err != nil {
-		return fmt.Errorf("could not click basket add button '%s': %w", addButtonSelector, err)
+	if err := clickLocatorWithMessage(addButton, fmt.Sprintf("could not click basket add button '%s'", addButtonSelector)); err != nil {
+		return err
 	}
-	basketAddDebugf("after: add button in modal clicked")
 
-	basketAddDebugf("before: wait for baskets API response after add click")
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
 	if err != nil {
 		return err
 	}
-	basketAddDebugf("after: baskets API response received (status=%d)", basketRes.Status)
 
-	basketAddDebugf("before: print basket add result JSON")
 	printBasketActionResult("add", venueSlug, itemID, basketRes)
-	basketAddDebugf("after: basket add result JSON printed")
 	return nil
 }
 
 func runBasketRemoveFromCheckout(cfg Config, venueSlug, itemID string, quantity int) error {
-	targetURL := buildCheckoutURL(cfg, venueSlug)
-	basketRemoveDebugf("before: prepare checkout remove URL")
-	fmt.Printf("Opening checkout page for basket remove: %s\n", targetURL)
-	basketRemoveDebugf("after: checkout remove URL ready")
-
-	basketRemoveDebugf("before: launch browser session for checkout remove flow")
-	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
-		headless:         false, // Always interactive for basket actions
-		ensureProfileDir: true,
-	})
+	pw, ctx, page, resChan, err := openBasketCheckoutPage(cfg, venueSlug, "remove")
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
-	basketRemoveDebugf("after: browser session launched for checkout remove flow")
+	defer closeSession(pw, ctx)
 
-	basketRemoveDebugf("before: attach basket API response capture")
-	resChan := attachBasketResponseCapture(page)
-	basketRemoveDebugf("after: basket API response capture attached")
-
-	basketRemoveDebugf("before: navigate to checkout page")
-	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to checkout URL: %w", err)
-	}
-	basketRemoveDebugf("after: checkout page navigation completed")
-
-	basketRemoveDebugf("before: wait for checkout page load state")
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("checkout page did not fully load: %w", err)
-	}
-	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
-		return err
-	}
-	basketRemoveDebugf("after: checkout page fully loaded")
-
-	basketRemoveDebugf("before: ensure checkout is ready for basket remove flow")
 	if err := ensureCheckoutReadyForBasketRemove(page, cfg.Timeout); err != nil {
 		return err
 	}
-	basketRemoveDebugf("after: checkout is ready for basket remove flow")
 
-	cartItemSelector := buildCheckoutCartItemSelector(itemID)
-	basketRemoveDebugf("before: check if cart item exists using selector %s", cartItemSelector)
-	hasCartItem, err := waitForCheckoutCartItem(page, cartItemSelector, basketCheckoutCartItemWaitTimeout(cfg.Timeout))
+	cartItemSelector, err := ensureCheckoutCartItemPresent(page, itemID, cfg.Timeout)
 	if err != nil {
 		return err
 	}
-	basketRemoveDebugf("after: cart item existence check completed (exists=%t)", hasCartItem)
-	if !hasCartItem {
-		return fmt.Errorf("item '%s' was found in basket pre-check but not found on checkout page", itemID)
-	}
 	fmt.Printf("Item %s is in basket with quantity %d. Using checkout flow for removal.\n", itemID, quantity)
 
-	cartItemButton := page.Locator(cartItemSelector).Nth(0).Locator("button").Nth(0)
-	basketRemoveDebugf("before: wait for cart item button")
-	if err := cartItemButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find cart item button for '%s': %w", itemID, err)
+	if err := openCheckoutCartItemModal(page, cartItemSelector, itemID, cfg.Timeout); err != nil {
+		return err
 	}
-	basketRemoveDebugf("after: cart item button is visible")
-
-	basketRemoveDebugf("before: click cart item button")
-	if err := cartItemButton.Click(); err != nil {
-		return fmt.Errorf("could not click cart item button for '%s': %w", itemID, err)
-	}
-	basketRemoveDebugf("after: cart item button clicked")
 
 	decrementButtonSelector := `[data-test-id="product-modal.quantity.decrement"]`
-	decrementButton := page.Locator(decrementButtonSelector).Nth(0)
-	basketRemoveDebugf("before: wait for quantity decrement button in modal")
-	if err := decrementButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find quantity decrement button '%s' in modal: %w", decrementButtonSelector, err)
+	if _, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		decrementButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find quantity decrement button '%s' in modal", decrementButtonSelector),
+	); err != nil {
+		return err
 	}
-	basketRemoveDebugf("after: quantity decrement button in modal is visible")
 
 	for i := 0; i < quantity; i++ {
-		basketRemoveDebugf("before: click quantity decrement button in modal (%d/%d)", i+1, quantity)
-		clicked := false
-		for attempt := 1; attempt <= 3; attempt++ {
-			decrementButton = page.Locator(decrementButtonSelector).Nth(0)
-			if err := decrementButton.Click(playwright.LocatorClickOptions{
-				Timeout: playwright.Float(3000),
-			}); err != nil {
-				if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
-					basketRemoveDebugf("after: decrement click retry needed (%d/%d, attempt %d): %v", i+1, quantity, attempt, err)
-					time.Sleep(150 * time.Millisecond)
-					continue
-				}
-				return fmt.Errorf("could not click quantity decrement button '%s' in modal on click %d/%d: %w", decrementButtonSelector, i+1, quantity, err)
-			}
-			clicked = true
-			break
+		if err := clickFirstLocatorWithRetry(page, decrementButtonSelector, 3, 3*time.Second, nil); err != nil {
+			return wrapClickError(
+				fmt.Sprintf("could not click quantity decrement button '%s' in modal on click %d/%d", decrementButtonSelector, i+1, quantity),
+				err,
+			)
 		}
-		if !clicked {
-			return fmt.Errorf("could not click quantity decrement button '%s' in modal on click %d/%d after retries", decrementButtonSelector, i+1, quantity)
-		}
-		basketRemoveDebugf("after: quantity decrement button in modal clicked (%d/%d)", i+1, quantity)
 	}
 
 	submitButtonSelector := `[data-test-id="product-modal.submit"]`
-	submitButton := page.Locator(submitButtonSelector).Nth(0)
-	basketRemoveDebugf("before: wait for modal submit button")
-	if err := submitButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find modal submit button '%s': %w", submitButtonSelector, err)
+	submitButton, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		submitButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find modal submit button '%s'", submitButtonSelector),
+	)
+	if err != nil {
+		return err
 	}
-	basketRemoveDebugf("after: modal submit button is visible")
 
-	basketRemoveDebugf("before: click modal submit button")
 	clickStartedAt := time.Now()
-	if err := submitButton.Click(); err != nil {
-		return fmt.Errorf("could not click modal submit button '%s': %w", submitButtonSelector, err)
+	if err := clickLocatorWithMessage(submitButton, fmt.Sprintf("could not click modal submit button '%s'", submitButtonSelector)); err != nil {
+		return err
 	}
-	basketRemoveDebugf("after: modal submit button clicked")
 
-	basketRemoveDebugf("before: wait for baskets API response after remove submit")
 	basketRes, err := waitForBasketAPIResponse(resChan, cfg.Timeout, clickStartedAt)
 	if err != nil {
 		return err
 	}
-	basketRemoveDebugf("after: baskets API response received (status=%d)", basketRes.Status)
 
-	basketRemoveDebugf("before: print basket remove result JSON")
 	printBasketActionResult("remove", venueSlug, itemID, basketRes)
-	basketRemoveDebugf("after: basket remove result JSON printed")
 	return nil
-}
-
-func basketAddDebugf(format string, args ...interface{}) {
-	fmt.Printf("[DEBUG][basket add] "+format+"\n", args...)
-}
-
-func basketRemoveDebugf(format string, args ...interface{}) {
-	fmt.Printf("[DEBUG][basket remove] "+format+"\n", args...)
 }
 
 func printBasketActionResult(actionName, venueSlug, itemID string, basketRes basketResponseData) {
@@ -1212,41 +1151,35 @@ func runCheckout(cfg Config, venueSlug string) error {
 	targetURL := buildCheckoutURL(cfg, venueSlug)
 	fmt.Printf("Opening checkout page: %s\n", targetURL)
 
-	pw, ctx, page, err := launchPersistentSession(cfg, browserSessionOptions{
-		headless:         false, // Always interactive for checkout
-		ensureProfileDir: true,
-	})
+	pw, ctx, page, err := launchInteractiveSession(cfg)
 	if err != nil {
 		return err
 	}
-	defer pw.Stop()
-	defer ctx.Close()
+	defer closeSession(pw, ctx)
 
-	if _, err := page.Goto(targetURL); err != nil {
-		return fmt.Errorf("could not go to checkout URL: %w", err)
-	}
-
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("checkout page did not fully load: %w", err)
-	}
-	if err := ensureUserAuthorized(page, cfg.Timeout); err != nil {
+	if err := gotoWaitLoadAndEnsureUserAuthorized(
+		page,
+		targetURL,
+		cfg.Timeout,
+		"could not go to checkout URL",
+		"checkout page did not fully load",
+	); err != nil {
 		return err
 	}
 
 	sendOrderButtonSelector := `[data-test-id="SendOrderButton"]`
-	sendOrderButton := page.Locator(sendOrderButtonSelector).Nth(0)
-	if err := sendOrderButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(cfg.Timeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find Send Order button '%s': %w", sendOrderButtonSelector, err)
+	sendOrderButton, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		sendOrderButtonSelector,
+		cfg.Timeout,
+		fmt.Sprintf("could not find Send Order button '%s'", sendOrderButtonSelector),
+	)
+	if err != nil {
+		return err
 	}
 
-	if err := sendOrderButton.Click(); err != nil {
-		return fmt.Errorf("could not click Send Order button '%s': %w", sendOrderButtonSelector, err)
+	if err := clickLocatorWithMessage(sendOrderButton, fmt.Sprintf("could not click Send Order button '%s'", sendOrderButtonSelector)); err != nil {
+		return err
 	}
 
 	modalInnerValue, foundModal, err := waitForGenericCheckoutErrorModalInnerText(page, 10*time.Second)
@@ -1768,19 +1701,12 @@ func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Durat
 		return fmt.Errorf("could not inspect checkout readiness via send-order button '%s': %w", sendOrderButtonSelector, err)
 	}
 	if sendOrderVisible {
-		basketRemoveDebugf("after: checkout send-order button is visible")
 		return nil
 	}
 
-	basketRemoveDebugf("after: checkout send-order button is not visible; attempting redirect recovery")
-	clickedRestore, err := maybeConfirmRestoreOrderModal(page, waitTimeout)
+	_, err = maybeConfirmRestoreOrderModal(page, waitTimeout)
 	if err != nil {
 		return fmt.Errorf("could not handle optional restore-order modal before checkout recovery: %w", err)
-	}
-	if clickedRestore {
-		basketRemoveDebugf("after: optional restore-order modal confirmed before checkout recovery")
-	} else {
-		basketRemoveDebugf("after: optional restore-order modal not shown before checkout recovery")
 	}
 
 	cartViewButtonSelector := `[data-test-id="cart-view-button"]`
@@ -1789,72 +1715,28 @@ func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Durat
 		return fmt.Errorf("could not inspect cart view button '%s' before checkout recovery: %w", cartViewButtonSelector, err)
 	}
 	if cartViewVisible {
-		basketRemoveDebugf("before: click cart view button (%s)", cartViewButtonSelector)
-		clickedCartView := false
-		for attempt := 1; attempt <= 3; attempt++ {
-			cartViewButton := page.Locator(cartViewButtonSelector).Nth(0)
-			if err := cartViewButton.Click(playwright.LocatorClickOptions{
-				Timeout: playwright.Float(3000),
-			}); err != nil {
-				if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
-					basketRemoveDebugf("after: cart view button click retry needed (attempt %d): %v", attempt, err)
-					time.Sleep(150 * time.Millisecond)
-					continue
-				}
-				return fmt.Errorf("could not click cart view button '%s': %w", cartViewButtonSelector, err)
-			}
-			clickedCartView = true
-			break
+		if err := clickFirstLocatorWithRetry(page, cartViewButtonSelector, 3, 3*time.Second, nil); err != nil {
+			return wrapClickError(fmt.Sprintf("could not click cart view button '%s'", cartViewButtonSelector), err)
 		}
-		if !clickedCartView {
-			return fmt.Errorf("could not click cart view button '%s' after retries", cartViewButtonSelector)
-		}
-		basketRemoveDebugf("after: cart view button clicked")
-	} else {
-		basketRemoveDebugf("after: cart view button not shown; continuing to checkout next-step button")
 	}
 
 	nextStepSelector := `[data-test-id="CartViewNextStepButton"]`
-	nextStepButton := page.Locator(nextStepSelector).Nth(0)
-	basketRemoveDebugf("before: wait for checkout next-step button (%s)", nextStepSelector)
-	if err := nextStepButton.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
-	}); err != nil {
-		return fmt.Errorf("could not find checkout next-step button '%s': %w", nextStepSelector, err)
+	if _, err := waitForFirstVisibleLocatorWithMessage(
+		page,
+		nextStepSelector,
+		waitTimeout,
+		fmt.Sprintf("could not find checkout next-step button '%s'", nextStepSelector),
+	); err != nil {
+		return err
 	}
-	basketRemoveDebugf("after: checkout next-step button is visible")
 
-	basketRemoveDebugf("before: click checkout next-step button")
-	clickedNextStep := false
-	for attempt := 1; attempt <= 3; attempt++ {
-		nextStepButton = page.Locator(nextStepSelector).Nth(0)
-		if err := nextStepButton.Click(playwright.LocatorClickOptions{
-			Timeout: playwright.Float(3000),
-		}); err != nil {
-			if isRetryableRestoreModalClickError(err) || isPlaywrightTimeoutError(err) {
-				basketRemoveDebugf("after: checkout next-step click retry needed (attempt %d): %v", attempt, err)
-				time.Sleep(150 * time.Millisecond)
-				continue
-			}
-			return fmt.Errorf("could not click checkout next-step button '%s': %w", nextStepSelector, err)
-		}
-		clickedNextStep = true
-		break
+	if err := clickFirstLocatorWithRetry(page, nextStepSelector, 3, 3*time.Second, nil); err != nil {
+		return wrapClickError(fmt.Sprintf("could not click checkout next-step button '%s'", nextStepSelector), err)
 	}
-	if !clickedNextStep {
-		return fmt.Errorf("could not click checkout next-step button '%s' after retries", nextStepSelector)
-	}
-	basketRemoveDebugf("after: checkout next-step button clicked")
 
-	basketRemoveDebugf("before: wait for checkout load state after next-step click")
-	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateLoad,
-		Timeout: playwright.Float(float64(waitTimeout.Milliseconds())),
-	}); err != nil {
+	if err := waitForPageLoadState(page, playwright.LoadStateLoad, waitTimeout); err != nil {
 		return fmt.Errorf("checkout page did not fully load after clicking '%s': %w", nextStepSelector, err)
 	}
-	basketRemoveDebugf("after: checkout load state reached after next-step click")
 
 	sendOrderVisible, err = isLocatorVisible(page, sendOrderButtonSelector, waitTimeout)
 	if err != nil {
@@ -1863,7 +1745,6 @@ func ensureCheckoutReadyForBasketRemove(page playwright.Page, timeout time.Durat
 	if !sendOrderVisible {
 		return fmt.Errorf("checkout is not ready for removal: send-order button '%s' is not visible after recovery", sendOrderButtonSelector)
 	}
-	basketRemoveDebugf("after: checkout send-order button is visible after recovery")
 	return nil
 }
 
@@ -1888,15 +1769,8 @@ func hasUserStatusDropdown(page playwright.Page, timeout time.Duration) (bool, e
 }
 
 func isLocatorVisible(page playwright.Page, selector string, timeout time.Duration) (bool, error) {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-
 	locator := page.Locator(selector).Nth(0)
-	if err := locator.WaitFor(playwright.LocatorWaitForOptions{
-		State:   playwright.WaitForSelectorStateVisible,
-		Timeout: playwright.Float(float64(timeout.Milliseconds())),
-	}); err != nil {
+	if err := waitForVisibleLocator(locator, timeout); err != nil {
 		if isPlaywrightTimeoutError(err) {
 			return false, nil
 		}
