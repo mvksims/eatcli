@@ -5,7 +5,7 @@ description: Use this skill when setting up, building, or running EAT CLI, a plu
 
 # EAT CLI Skill
 
-EAT CLI is a plug-and-play skill that lets your AI agent browse menus, customize orders, and check out from major delivery services through one CLI workflow.
+EAT CLI is a plug-and-play skill that lets your AI agent browse menus, customize orders, and check out through one CLI workflow.
 
 ## Prerequisites
 
@@ -16,6 +16,7 @@ EAT CLI is a plug-and-play skill that lets your AI agent browse menus, customize
    - `user_data_dir`
    - `venue_base_url` (required)
    - `timeout_seconds`
+4. For Wolt ordering, an existing Wolt account with a saved payment card is required to place orders.
 
 ## Install (Cross-OS)
 
@@ -60,6 +61,14 @@ go build -o .\bin\eatcli.exe .\main.go
 go run main.go auth
 ```
 2. `search`, `basket`, and `checkout` rely on authenticated session data in `user_data_dir`.
+3. Current provider support is Wolt only for real ordering flows; Bolt is a stub integration.
+
+## Ordering Rules
+
+1. Prefer ordering items from the same `venue_slug` to reduce delivery and commission costs.
+2. Before running `checkout`, always warn the human user about current basket total and ask for confirmation.
+3. Only packed/simple items are currently supported in ordering flows.
+4. Items sold by weight are not supported at the moment.
 
 ## Usage: Search
 
