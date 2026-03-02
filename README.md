@@ -2,6 +2,20 @@
 
 This is a Go application that uses Playwright to automate shopping workflows with a persistent login session. It provides `auth` to sign in once, `search` to find products, `basket` to read current basket state, `basket add` to increase item quantity, `basket remove` to remove items from basket, and `checkout` to attempt order placement and surface checkout errors.
 
+## License
+
+This project uses dual licensing:
+
+1. AGPL-3.0-only (open source)
+2. Commercial license (separate written agreement)
+
+Commercial licensing is required for:
+1. Closed-source redistribution.
+2. Embedding in paid products.
+3. SaaS/internal hosted use without AGPL source-sharing compliance.
+
+See `LICENSE` and `COMMERCIAL_LICENSE.md`.
+
 ## Prerequisites
 
 - Go (v1.18 or later) installed and configured in your system's PATH.
