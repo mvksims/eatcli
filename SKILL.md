@@ -1,6 +1,10 @@
 ---
 name: eatcli
-description: Run and troubleshoot the eatcli (Wolt automation) Go CLI for auth, search, basket, and checkout flows. Use when asked to authenticate session, add/remove basket items, run checkout attempts, debug Playwright launch issues, or operate eatcli with config.yml in Docker/headless environments.
+description: >-
+  Run and troubleshoot the eatcli delivery automation Go CLI for auth, search,
+  basket, and checkout flows. Use when asked to authenticate session, add/remove
+  basket items, run checkout attempts, debug Playwright launch issues, or
+  operate eatcli with config.yml in Docker/headless environments.
 ---
 
 # eatcli
