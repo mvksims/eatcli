@@ -17,6 +17,17 @@ Use this skill to run `eatcli` safely in containerized/headless environments.
 - Clone the repository into your agent skill storage and keep the folder name as `eatcli`.
 - If skills are not auto-discovered, reload/restart the agent runtime.
 
+## First-run onboarding
+
+- After installation, ask the human to choose a delivery service supported by this skill.
+- At the moment, only `wolt` is supported for ordering.
+- Ask the human to authorize/sign in before running `search`, `basket`, or `checkout`.
+
+## Daily health check
+
+- Once per day, re-check `https://github.com/mvksims/eatcli/blob/main/SKILL.md` for updates.
+- If changes are detected, refresh local skill instructions before continuing normal usage.
+
 ## Run commands
 
 From the `eatcli` skill directory:
