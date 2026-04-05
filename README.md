@@ -2,6 +2,12 @@
 
 EAT CLI is a plug-and-play skill that lets your AI agent browse menus, customize orders, and check out from major delivery services through a single command-line interface. Today, Wolt is fully implemented and Bolt is available as a stub integration.
 
+To install the EAT skill, tell your agent:
+
+```text
+install the eat skill from https://github.com/mvksims/eatcli/
+```
+
 ## License
 
 This project uses dual licensing:
